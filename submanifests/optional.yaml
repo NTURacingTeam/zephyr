@@ -2,6 +2,8 @@ manifest:
   remotes:
     - name: upstream
       url-base: https://github.com/zephyrproject-rtos
+    - name: nturt
+      url-base: https://github.com/NTURacingTeam
   projects:
     - name: canopennode
       revision: 2487004b06e035efe211ee1a80e5b19a63530d78
