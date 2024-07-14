@@ -4,9 +4,9 @@ manifest:
       url-base: https://github.com/zephyrproject-rtos
   projects:
     - name: canopennode
-      revision: dec12fa3f0d790cafa8414a4c2930ea71ab72ffd
+      revision: 2487004b06e035efe211ee1a80e5b19a63530d78
       path: modules/lib/canopennode
-      remote: upstream
+      remote: nturt
       groups:
         - optional
     - name: chre
