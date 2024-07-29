@@ -90,10 +90,8 @@ typedef struct canopen_tx {
 	bool_t syncFlag: 1;
 } CO_CANtx_t;
 
-struct canopen; /* defined in canopennode.h */
-
 typedef struct canopen_module {
-	struct canopen *co;
+	const struct device *can_dev;
 	struct k_mutex can_send_mutex;
 	struct k_mutex emcy_mutex;
 	struct k_mutex od_mutex;
@@ -102,7 +100,6 @@ typedef struct canopen_module {
 	CO_CANtx_t *tx_array;
 	uint16_t rx_size;
 	uint16_t tx_size;
-	void *em;
 	uint16_t CANerrorStatus;
 	bool_t configured: 1;
 	bool_t CANnormal: 1;

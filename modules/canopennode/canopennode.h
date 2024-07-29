@@ -46,7 +46,7 @@ extern "C" {
 #define CANOPEN_STORAGE_DEFINE(NAME, ...) static CO_storage_entry_t NAME[] = {__VA_ARGS__}
 
 struct canopen {
-	const struct device *can;
+	const struct device *can_dev;
 	uint8_t node_id;
 	uint16_t bitrate;
 #if CO_CONFIG_EM & CO_CONFIG_EM_STATUS_BITS

@@ -49,7 +49,7 @@ int canopen_init(struct canopen *co)
 {
 	int err;
 
-	if (!device_is_ready(co->can)) {
+	if (!device_is_ready(co->can_dev)) {
 		LOG_ERR("CAN device not ready");
 		return -ENODEV;
 	}
@@ -129,7 +129,7 @@ int canopen_reset_communication(struct canopen *co)
 	}
 
 	CO_CANmodule_disable(CO->CANmodule);
-	err = CO_CANinit(CO, co, co->bitrate);
+	err = CO_CANinit(CO, (void *)co->can_dev, co->bitrate);
 	if (err != CO_ERROR_NO) {
 		LOG_ERR("CO_CANinit failed (err %d)", err);
 		return -EIO;

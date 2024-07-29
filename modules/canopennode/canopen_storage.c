@@ -119,7 +119,6 @@ static ODR_t store(CO_storage_entry_t *entry, CO_CANmodule_t *CANmodule)
 	err = settings_save_one(key, entry->addr, entry->len);
 	if (err < 0) {
 		LOG_ERR("failed to save settings data %s (err %d)", entry->key, err);
-		CO_errorReport(CANmodule->em, CO_EM_NON_VOLATILE_MEMORY, CO_EMC_HARDWARE, 0);
 		return ODR_HW;
 	}
 
@@ -137,7 +136,6 @@ static ODR_t restore(CO_storage_entry_t *entry, CO_CANmodule_t *CANmodule)
 	err = settings_delete(key);
 	if (err < 0) {
 		LOG_ERR("failed to delete settings data %s (err %d)", entry->key, err);
-		CO_errorReport(CANmodule->em, CO_EM_NON_VOLATILE_MEMORY, CO_EMC_HARDWARE, 0);
 		return ODR_HW;
 	}
 
