@@ -323,11 +323,16 @@ CO_ReturnError_t CO_CANsend(CO_CANmodule_t *CANmodule, CO_CANtx_t *buffer)
 	CO_LOCK_CAN_SEND(CANmodule);
 
 	if (buffer->bufferFull) {
-		if (!CANmodule->first_tx_msg) {
-			CANmodule->CANerrorStatus |= CO_CAN_ERRTX_OVERFLOW;
-		}
-		buffer->bufferFull = false;
-		ret = CO_ERROR_TX_OVERFLOW;
+		// if (!CANmodule->first_tx_msg) {
+		// 	CANmodule->CANerrorStatus |= CO_CAN_ERRTX_OVERFLOW;
+		// }
+		// buffer->bufferFull = false;
+		// ret = CO_ERROR_TX_OVERFLOW;
+
+		LOG_WRN("TX buffer full, discarding message with ID 0x%03X", buffer->ident);
+
+		CO_UNLOCK_CAN_SEND(CANmodule);
+		return CO_ERROR_TX_OVERFLOW;
 	}
 
 	frame.id = buffer->ident;

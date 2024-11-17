@@ -141,7 +141,7 @@ int canopen_reset_communication(struct canopen *co)
 	    OD_get_u32(identity, 2, &product_code, true) != ODR_OK ||
 	    OD_get_u32(identity, 3, &revision_number, true) != ODR_OK ||
 	    OD_get_u32(identity, 4, &serial_number, true) != ODR_OK) {
-		LOG_ERR("object dictionary error at entry 0x1018\n");
+		LOG_ERR("object dictionary error at entry 0x1018");
 		return -EINVAL;
 	}
 
@@ -165,7 +165,7 @@ int canopen_reset_communication(struct canopen *co)
 #if OD_CNT_NMT == 1
 	if ((first_hb_time = OD_find(OD, OD_H1017_PRODUCER_HB_TIME)) == NULL ||
 	    OD_get_u16(first_hb_time, 0, &first_hb_time_ms, true) != ODR_OK) {
-		LOG_ERR("object dictionary error at entry 0x1017\n");
+		LOG_ERR("object dictionary error at entry 0x1017");
 		return -EINVAL;
 	}
 #endif /* OD_CNT_NMT */
@@ -181,7 +181,7 @@ int canopen_reset_communication(struct canopen *co)
 		CONFIG_CANOPENNODE_SDO_CLI_TIMEOUT_TIME,
 		IS_ENABLED(CONFIG_CANOPENNODE_SDO_CLI_BLOCK), co->node_id, &error_info);
 	if (err == CO_ERROR_OD_PARAMETERS) {
-		LOG_ERR("object dictionary error at entry 0x%X\n", error_info);
+		LOG_ERR("object dictionary error at entry 0x%X", error_info);
 		return -EINVAL;
 	} else if (err != CO_ERROR_NO && (!(CO_CONFIG_LSS & CO_CONFIG_LSS_SLAVE) ||
 					  err != CO_ERROR_NODE_ID_UNCONFIGURED_LSS)) {
@@ -191,7 +191,7 @@ int canopen_reset_communication(struct canopen *co)
 
 	err = CO_CANopenInitPDO(CO, CO->em, OD, co->node_id, &error_info);
 	if (err == CO_ERROR_OD_PARAMETERS) {
-		LOG_ERR("object dictionary error at entry 0x%X\n", error_info);
+		LOG_ERR("object dictionary error at entry 0x%X", error_info);
 		return -EINVAL;
 	} else if (err != CO_ERROR_NO) {
 		LOG_ERR("CO_CANopenInitPDO failed (err %d)", err);

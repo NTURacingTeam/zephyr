@@ -52,13 +52,13 @@ int canopen_storage_init(struct canopen *co)
 
 	OD_1010 = OD_find(OD, OD_H1010_STORE_PARAMETERS);
 	if (OD_1010 == NULL) {
-		LOG_ERR("object dictionary error at entry 0x1010\n");
+		LOG_ERR("object dictionary error at entry 0x1010");
 		return -EINVAL;
 	}
 
 	OD_1011 = OD_find(OD, OD_H1011_RESTORE_DEFAULT);
 	if (OD_1011 == NULL) {
-		LOG_ERR("object dictionary error at entry 0x1011\n");
+		LOG_ERR("object dictionary error at entry 0x1011");
 		return -EINVAL;
 	}
 
@@ -71,7 +71,7 @@ int canopen_storage_init(struct canopen *co)
 
 	err = settings_subsys_init();
 	if (err < 0) {
-		LOG_ERR("failed to initialize settings subsystem (err %d)\n", err);
+		LOG_ERR("failed to initialize settings subsystem (err %d)", err);
 		return err;
 	}
 
