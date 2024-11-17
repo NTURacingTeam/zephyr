@@ -511,44 +511,54 @@ void settings_mount_file_backend(struct settings_file *cf)
 	settings_line_io_init(read_handler, write_handler, get_len_cb, 1);
 }
 
-static int mkdir_if_not_exists(const char *path)
+static int mkdir_for_file(const char *path)
 {
-	struct fs_dirent entry;
-	int err;
+	const char *next;
+	const char *last = path + (strlen(path) - 1);
+	char w_path[SETTINGS_FILE_NAME_MAX];
+	int rc, len;
+	struct fs_dir_t dir;
 
-	err = fs_stat(path, &entry);
-	if (err == -ENOENT) {
-		return fs_mkdir(path);
-	} else if (err) {
-		return err;
+	fs_dir_t_init(&dir);
+
+	/* the fist directory name is the mount point */
+	/* the firs path's letter might be meaningless `/`, let's skip it */
+	next = strchr(path + 1, '/');
+	if (!next) {
+		return 0;
 	}
 
-	if (entry.type != FS_DIR_ENTRY_DIR) {
-		return -EEXIST;
-	}
-
-	return 0;
-}
-
-static int mkdir_for_file(const char *file_path)
-{
-	char dir_path[SETTINGS_FILE_NAME_MAX];
-	int err;
-
-	for (size_t i = 0; file_path[i] != '\0'; i++) {
-		if (i > 0 && file_path[i] == '/') {
-			dir_path[i] = '\0';
-
-			err = mkdir_if_not_exists(dir_path);
-			if (err) {
-				return err;
-			}
+	while (true) {
+		next++;
+		if (next > last) {
+			return 0;
+		}
+		next = strchr(next, '/');
+		if (!next) {
+			next = last;
+			len = last - path + 1;
+		} else {
+			len = next - path;
 		}
 
-		dir_path[i] = file_path[i];
+		memcpy(w_path, path, len);
+		w_path[len] = 0;
+
+		rc = fs_opendir(&dir, w_path);
+		if (rc) {
+			/* assume directory doesn't exist */
+			rc = fs_mkdir(w_path);
+			if (rc) {
+				break;
+			}
+		}
+		rc = fs_closedir(&dir);
+		if (rc) {
+			break;
+		}
 	}
 
-	return 0;
+	return rc;
 }
 
 int settings_backend_init(void)
