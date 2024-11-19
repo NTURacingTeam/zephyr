@@ -43,6 +43,7 @@ static void canopen_rx_callback(const struct device *dev, struct can_frame *fram
 	CO_CANmodule_t *CANmodule = (CO_CANmodule_t *)arg;
 	CO_CANrxMsg_t rxMsg;
 	CO_CANrx_t *buffer;
+	canopen_rxmsg_callback_t callback = rxmsg_callback;
 	int i;
 
 	ARG_UNUSED(dev);
@@ -65,6 +66,9 @@ static void canopen_rx_callback(const struct device *dev, struct can_frame *fram
 			rxMsg.DLC = frame->dlc;
 			memcpy(rxMsg.data, frame->data, frame->dlc);
 			buffer->pFunct(buffer->object, &rxMsg);
+			if (callback != NULL) {
+				callback();
+			}
 			break;
 		}
 	}
