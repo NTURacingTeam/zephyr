@@ -10,6 +10,7 @@
 #define ZEPHYR_DRIVERS_DISPLAY_DISPLAY_ILI9XXX_H_
 
 #include <zephyr/drivers/mipi_dbi.h>
+#include <zephyr/drivers/pwm.h>
 #include <zephyr/sys/util.h>
 
 /* Commands/registers. */
@@ -74,6 +75,7 @@ struct ili9xxx_config {
 	uint16_t x_resolution;
 	uint16_t y_resolution;
 	bool inversion;
+	struct pwm_dt_spec brightness_pwm;
 	const void *regs;
 	int (*regs_init_fn)(const struct device *dev);
 };

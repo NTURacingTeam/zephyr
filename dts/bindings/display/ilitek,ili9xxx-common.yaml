@@ -35,3 +35,8 @@ properties:
     description:
       Display inversion mode. Every bit is inverted from the frame memory to
       the display.
+
+  pwms:
+    type: phandle-array
+    description: |
+      PWM instance that is used to control the brightness of the display.

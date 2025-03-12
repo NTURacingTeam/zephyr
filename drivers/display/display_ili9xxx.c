@@ -8,8 +8,11 @@
 
 #include "display_ili9xxx.h"
 
+#include <stdint.h>
+
 #include <zephyr/dt-bindings/display/ili9xxx.h>
 #include <zephyr/drivers/display.h>
+#include <zephyr/drivers/pwm.h>
 #include <zephyr/sys/byteorder.h>
 
 #include <zephyr/logging/log.h>
@@ -285,6 +288,21 @@ static int ili9xxx_display_blanking_on(const struct device *dev)
 	return ili9xxx_transmit(dev, ILI9XXX_DISPOFF, NULL, 0);
 }
 
+
+static int ili9xxx_set_brightness(const struct device *dev,
+					              const uint8_t brightness)
+{
+	const struct ili9xxx_config *config = dev->config;
+
+
+	if (!config->brightness_pwm.dev) {
+		return -ENOTSUP;
+	}
+
+  	return pwm_set_pulse_dt(&config->brightness_pwm,
+        config->brightness_pwm.period * brightness / UINT8_MAX);
+}
+
 static int
 ili9xxx_set_pixel_format(const struct device *dev,
 			 const enum display_pixel_format pixel_format)
@@ -480,6 +498,7 @@ static DEVICE_API(display, ili9xxx_api) = {
 	.blanking_on = ili9xxx_display_blanking_on,
 	.blanking_off = ili9xxx_display_blanking_off,
 	.write = ili9xxx_write,
+	.set_brightness = ili9xxx_set_brightness,
 #ifdef CONFIG_ILI9XXX_READ
 	.read = ili9xxx_read,
 #endif
@@ -535,6 +554,7 @@ static const struct ili9xxx_quirks ili9488_quirks = {
 		.x_resolution = ILI##t##_X_RES,                                \
 		.y_resolution = ILI##t##_Y_RES,                                \
 		.inversion = DT_PROP(INST_DT_ILI9XXX(n, t), display_inversion),\
+		.brightness_pwm = PWM_DT_SPEC_GET_OR(INST_DT_ILI9XXX(n, t), {}),\
 		.regs = &ili##t##_regs_##n,                                    \
 		.regs_init_fn = ili##t##_regs_init,                            \
 	};                                                                     \
