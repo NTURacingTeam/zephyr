@@ -535,8 +535,7 @@ static int mkdir_for_file(const char *path)
 		}
 		next = strchr(next, '/');
 		if (!next) {
-			next = last;
-			len = last - path + 1;
+			return 0;
 		} else {
 			len = next - path;
 		}
