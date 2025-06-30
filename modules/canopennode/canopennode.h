@@ -41,10 +41,16 @@ extern "C" {
 				 .subIndexOD = _idx, .attr = _attr,                                \
 	}
 
+/* type ----------------------------------------------------------------------*/
+typedef void (*canopen_time_callback_t)(time_t epoch, void *user_data);
+
 /* function declaration ------------------------------------------------------*/
 int canopen_reset_communication();
 
-int canopen_storage_init(CO_CANmodule_t *module);
+int canopen_time_init(CO_t *co);
+void canopen_time_set_callback(canopen_time_callback_t callback, void *user_data);
+
+int canopen_storage_init(CO_t *co);
 
 int canopen_storage_process();
 

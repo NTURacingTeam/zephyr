@@ -37,6 +37,10 @@ if(CONFIG_CANOPENNODE)
     canopennode.c
   )
 
+  zephyr_library_sources_ifdef(CONFIG_CANOPENNODE_TIME
+    canopen_time.c
+  )
+
   zephyr_library_sources_ifdef(CONFIG_CANOPENNODE_STORAGE
     canopen_storage.c
   )

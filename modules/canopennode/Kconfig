@@ -19,7 +19,7 @@ if CANOPENNODE
 
 config CANOPENNODE_INIT_PRIORITY
 	int "Init priority"
-	default 60
+	default 20
 	help
 	  CANopenNode initialization priority.
 
@@ -212,7 +212,7 @@ DT_CHOSEN_ZEPHYR_CANOPEN_RED_LED := zephyr,canopen-red-led
 config CANOPENNODE_LEDS
 	bool "CANopen LED indicators"
 	depends on $(dt_chosen_enabled,$(DT_CHOSEN_ZEPHYR_CANOPEN_GREEN_LED)) && \
-		   $(dt_chosen_enabled,$(DT_CHOSEN_ZEPHYR_CANOPEN_RED_LED))
+		$(dt_chosen_enabled,$(DT_CHOSEN_ZEPHYR_CANOPEN_RED_LED))
 	default y
 	select GPIO
 	help

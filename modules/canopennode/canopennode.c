@@ -129,7 +129,7 @@ static int canopen_init(struct canopen_ctx *co)
 	g_ctx.CO = CO_new(NULL, NULL);
 
 #ifdef CONFIG_CANOPENNODE_STORAGE
-	err = canopen_storage_init(g_ctx.CO->CANmodule);
+	err = canopen_storage_init(g_ctx.CO);
 	if (err < 0) {
 		LOG_ERR("CO_storage_init failed (err %d)", err);
 		return -EIO;
