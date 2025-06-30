@@ -469,6 +469,7 @@ nordic	Nordic Semiconductor
 norik	Norik Systems
 noritake	Noritake Co., Inc. Electronics Division
 novtech	NovTech, Inc.
+nturt	National Taiwan University Racing Team
 nuclei	Nuclei System Technology
 nutsboard	NutsBoard
 nuvoton	Nuvoton Technology Corporation
