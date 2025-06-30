@@ -158,6 +158,10 @@ config CANOPENNODE_SDO_BUFFER_SIZE
 	help
 	  Size of the internal CANopen SDO buffer in bytes.
 
+config CANOPENNODE_SDO_TIMEOUT_TIME
+	int "CANopen SDO timeout time in ms"
+	default 1000
+
 config CANOPENNODE_TIME
 	bool "CANopen time object support"
 	help

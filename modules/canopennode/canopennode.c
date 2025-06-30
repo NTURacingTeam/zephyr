@@ -49,17 +49,18 @@ struct canopen_ctx {
 	struct k_thread mainline_thread;
 	struct k_thread sync_thread;
 
-#if CO_CONFIG_EM & CO_CONFIG_EM_STATUS_BITS
-	OD_entry_t *status_bits;
-#endif
 	CO_t *CO;
 };
 
 /* static function declaration -----------------------------------------------*/
 static int canopen_init(struct canopen_ctx *co);
 static int canopen_reset_communication_impl(struct canopen_ctx *co);
+
 static void mainline_thread(void *p1, void *p2, void *p3);
 static void sync_thread(void *p1, void *p2, void *p3);
+
+static void wakeup_mainline(void *object);
+static void wakeup_sync(void *object);
 
 static int init();
 
@@ -219,6 +220,8 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 		LOG_ERR("CO_LSSinit failed (err %d)", err);
 		return -EIO;
 	}
+
+	CO_LSSslave_initCallbackPre(CO->LSSslave, co, wakeup_mainline);
 #endif /* CONFIG_CANOPENNODE_LSS_SLAVE */
 
 	if ((first_hb_time = OD_find(OD, OD_H1017_PRODUCER_HB_TIME)) == NULL ||
@@ -227,16 +230,10 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 		return -EINVAL;
 	}
 
-	err = CO_CANopenInit(CO, NULL, NULL, OD,
-#if CO_CONFIG_EM & CO_CONFIG_EM_STATUS_BITS
-			     co->status_bits,
-#else
-			     NULL,
-#endif /* CO_CONFIG_EM */
-			     NMT_CONTROL, first_hb_time_ms, CONFIG_CANOPENNODE_SDO_SRV_TIMEOUT_TIME,
-			     CONFIG_CANOPENNODE_SDO_CLI_TIMEOUT_TIME,
-			     IS_ENABLED(CONFIG_CANOPENNODE_SDO_CLI_BLOCK), co->node_id,
-			     &error_info);
+	err = CO_CANopenInit(
+		CO, NULL, NULL, OD, NULL, NMT_CONTROL, first_hb_time_ms,
+		CONFIG_CANOPENNODE_SDO_TIMEOUT_TIME, CONFIG_CANOPENNODE_SDO_TIMEOUT_TIME,
+		IS_ENABLED(CONFIG_CANOPENNODE_SDO_CLI_BLOCK), co->node_id, &error_info);
 	if (err == CO_ERROR_OD_PARAMETERS) {
 		LOG_ERR("object dictionary error at entry 0x%X", error_info);
 		return -EINVAL;
@@ -246,6 +243,24 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 		return -EIO;
 	}
 
+	/* TIME callbackPre is processed separatedly in canopennode_time.c */
+	CO_EM_initCallbackPre(CO->em, co, wakeup_mainline);
+	CO_NMT_initCallbackPre(CO->NMT, co, wakeup_mainline);
+#ifndef CONFIG_CANOPENNODE_HB_CONS_DISABLED
+	CO_HBconsumer_initCallbackPre(CO->HBcons, co, wakeup_mainline);
+#endif
+	for (int i = 0; i < OD_CNT_SDO_SRV; i++) {
+		CO_SDOserver_initCallbackPre(&CO->SDOserver[i], co, wakeup_mainline);
+	}
+#ifdef CONFIG_CANOPENNODE_SDO_CLI
+	for (int i = 0; i < OD_CNT_SDO_CLI; i++) {
+		CO_SDOclient_initCallbackPre(&CO->SDOclient[i], co, wakeup_mainline);
+	}
+#endif
+#ifndef CONFIG_CANOPENNODE_SYNC_DISABLED
+	CO_SYNC_initCallbackPre(CO->SYNC, co, wakeup_sync);
+#endif
+
 	err = CO_CANopenInitPDO(CO, CO->em, OD, co->node_id, &error_info);
 	if (err == CO_ERROR_OD_PARAMETERS) {
 		LOG_ERR("object dictionary error at entry 0x%X", error_info);
@@ -254,6 +269,8 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 		LOG_ERR("CO_CANopenInitPDO failed (err %d)", err);
 		return -EIO;
 	}
+
+	CO_RPDO_initCallbackPre(CO->RPDO, co, wakeup_sync);
 
 	CO_CANsetNormalMode(CO->CANmodule);
 
@@ -364,6 +381,24 @@ static void sync_thread(void *p1, void *p2, void *p3)
 		stop = k_cycle_get_32();
 		delta = stop - start;
 		elapsed = k_cyc_to_us_near32(delta);
+	}
+}
+
+static void wakeup_mainline(void *object)
+{
+	struct canopen_ctx *co = object;
+
+	if (co->mainline_tid != NULL) {
+		k_wakeup(co->mainline_tid);
+	}
+}
+
+static void wakeup_sync(void *object)
+{
+	struct canopen_ctx *co = object;
+
+	if (co->sync_tid != NULL) {
+		k_wakeup(co->sync_tid);
 	}
 }
 
