@@ -1,81 +1,245 @@
-# CANopenNode CANopen protocol stack configuration options
-
 # Copyright (c) 2019 Vestas Wind Systems A/S
-# Copyright (c) 2024 National Taiwan University Racing Team
+# Copyright (c) 2025 National Taiwan University Racing Team
 # SPDX-License-Identifier: Apache-2.0
 
 config ZEPHYR_CANOPENNODE_MODULE
 	bool
 
-config CANOPENNODE
+DT_CHOSEN_ZEPHYR_CANBUS := zephyr,canbus
+
+menuconfig CANOPENNODE
 	bool "CANopenNode support"
-	select CRC
 	depends on CAN && !CAN_FD_MODE
+	depends on $(dt_chosen_enabled,$(DT_CHOSEN_ZEPHYR_CANBUS))
+	select CRC
 	help
-	  This option enables the CANopenNode library.
+	  Enables CANopenNode stack for CANopen protocol support.
 
 if CANOPENNODE
 
-config CANOPENNODE_CONFIG_FILE
-	string "CANopen config file path"
+config CANOPENNODE_INIT_PRIORITY
+	int "Init priority"
+	default 60
 	help
-	  The path to the CANopen config file, use default config if
-	  not provided. Refer to the documentation of301/CO_config.h
-	  for supported configurations and their defaults.
+	  CANopenNode initialization priority.
 
-config CANOPENNODE_SDO_SRV_TIMEOUT_TIME
-	int "CANopen"
-	default 1000
+config CANOPENNODE_NODE_ID
+	int "CANopen node ID"
+	default 1
+	range 1 127
+	help
+	  CANopen node ID of the device.
 
-config CANOPENNODE_SDO_CLI_TIMEOUT_TIME
-	int "CANopen"
+config CANOPENNODE_BITRATE
+	int "CANopen bitrate in kHz"
 	default 500
-
-config CANOPENNODE_SDO_CLI_BLOCK
-	bool "CANopen"
-	default n
+	help
+	  CAN bus bitrate in kHz for CANopenNode.
 
 config CANOPENNODE_MAINLINE_THREAD_STACK_SIZE
-	int "Stack size for the CANopen mainline thread"
+	int "Stack size for the CANopenNode mainline thread"
 	default 2048
 	help
 	  Size of the stack used for the internal thread which
-	  processes time consuming CANopen tasks.
+	  processes time consuming CANopenNode tasks.
 
 config CANOPENNODE_MAINLINE_THREAD_PRIORITY
-	int "Priority for CANopen mainline thread"
+	int "Priority for CANopenNode mainline thread"
 	default 5
 	help
 	  Priority level of the internal thread which processes
-	  time consuming CANopen tasks.
+	  time consuming CANopenNode tasks.
+
+config CANOPENNODE_MAINLINE_THREAD_PERIOD
+	int "Period for the CANopenNode mainline thread"
+	default 10000
+	help
+	  Period in microseconds for the internal thread which
+	  processes time consuming CANopenNode tasks.
 
 config CANOPENNODE_SYNC_THREAD_STACK_SIZE
-	int "Stack size for the CANopen SYNC thread"
+	int "Stack size for the CANopenNode SYNC thread"
 	default 1024
 	help
 	  Size of the stack used for the internal thread which
 	  processes CANopen SYNC RPDOs and TPDOs.
 
 config CANOPENNODE_SYNC_THREAD_PRIORITY
-	int "Priority for CANopen SYNC thread"
+	int "Priority for CANopenNode SYNC thread"
 	default 0 if !COOP_ENABLED
 	default -5
 	help
 	  Priority level of the internal thread which processes
 	  CANopen SYNC RPDOs and TPDOs.
 
+config CANOPENNODE_SYNC_THREAD_PERIOD
+	int "Period for the CANopenNode SYNC thread"
+	default 1000
+	help
+	  Period in microseconds for the internal thread which
+	  processes CANopen SYNC RPDOs and TPDOs.
+
+config CANOPENNODE_NMT_STARTUP_TO_OPERATIONAL
+	bool "NMT startup to operational"
+	default y
+	help
+	  If enabled, device enters NMT operational state after
+	  initialization phase, otherwise it enters
+	  pre-operational state.
+
+config CANOPENNODE_NMT_ERR_ON_BUSOFF_HB
+	bool "NMT error on bus-off/heartbeat"
+	help
+	  If enabled, device enters pre-operational or stopped
+	  state if CAN bus is off or heartbeat timeout is detected.
+
+config CANOPENNODE_NMT_ERR_ON_ERR_REG_MASK
+	hex "NMT error on non-zero masked error register"
+	range 0x0 0xFF
+	default 0x0
+	help
+	  If non-zero, device enters pre-operational or stopped
+	  state if masked CANopen error register is nonzero.
+
+config CANOPENNODE_NMT_ERR_TO_STOPPED
+	bool "NMT error to stopped"
+	help
+	  If enabled, device enters stopped state if error
+	  condition is met, otherwise it enters pre-operational
+	  state.
+
+config CANOPENNODE_NMT_ERR_FREE_TO_OPERATIONAL
+	bool "NMT error free to operational"
+	default y
+	help
+	  If enabled and device is pre-operational, it enters
+	  operational state automatically if no error conditions
+	  exist.
+
+choice CANOPENNODE_HB_CONS
+	prompt "CANopen heartbeat consumer support"
+	default CANOPENNODE_HB_CONS_DISABLED
+	help
+	  Support for CANopen heartbeat consumer.
+
+config CANOPENNODE_HB_CONS_DISABLED
+	bool "Heartbeat consumer disabled"
+
+config CANOPENNODE_HB_CONS_SINGLE_CALLBACK
+	bool "Heartbeat consumer with a single callback"
+	help
+	  If enabled, heartbeat consumer will use a single callback
+	  for all NMT state changes of the monitored node.
+
+config CANOPENNODE_HB_CONS_MULTI_CALLBACK
+	bool "Heartbeat consumer with multiple callbacks"
+	help
+	  If enabled, heartbeat consumer will use a separate callback
+	  for each NMT state change of the monitored node.
+
+endchoice
+
+config CANOPENNODE_SDO_CLI
+	bool "CANopen SDO client support"
+	help
+	  Enable support for CANopen SDO client.
+
+config CANOPENNODE_SDO_BLOCK
+	bool "CANopen SDO block transfer support"
+	help
+	  Enable support for CANopen SDO block transfer.
+
+config CANOPENNODE_SDO_BUFFER_SIZE
+	int "CANopen SDO buffer size"
+	default 32 if !CANOPENNODE_SDO_BLOCK
+	default 1000 if CANOPENNODE_SDO_BLOCK
+	range 8 2147483647 if !CANOPENNODE_SDO_BLOCK
+	range 899 2147483647  if CANOPENNODE_SDO_BLOCK
+	help
+	  Size of the internal CANopen SDO buffer in bytes.
+
+config CANOPENNODE_TIME
+	bool "CANopen time object support"
+	help
+	  Enable support for CANopen time object.
+
+choice CANOPENNODE_SYNC
+	prompt "CANopen SYNC object support"
+	default CANOPENNODE_SYNC_DISABLED
+	help
+	  Support for CANopen SYNC object.
+
+config CANOPENNODE_SYNC_DISABLED
+	bool "SYNC disabled"
+
+config CANOPENNODE_SYNC_PRODUCER
+	bool "SYNC producer"
+
+config CANOPENNODE_SYNC_CONSUMER
+	bool "SYNC consumer"
+
+endchoice
+
+config CANOPENNODE_PDO_SYNC
+	bool "CANopen PDO SYNC support"
+	depends on !CANOPENNODE_SYNC_DISABLED
+	default y
+	help
+	  Enable support for SYNC in PDO.
+
+config CANOPENNODE_STORAGE
+	bool "CANopen object dictionary storage"
+	depends on SETTINGS
+	default y
+	help
+	  Enable support for storing the CANopen object dictionary to
+	  non-volatile storage.
+
+config CANOPENNODE_STORAGE_SUBTREE
+	string "Settings subtree name for CANopen storage"
+	depends on CANOPENNODE_STORAGE
+	default "canopen"
+	help
+	  Settings subtree name for storing the CANopen object dictionary.
+
+DT_CHOSEN_ZEPHYR_CANOPEN_GREEN_LED := zephyr,canopen-green-led
+DT_CHOSEN_ZEPHYR_CANOPEN_RED_LED := zephyr,canopen-red-led
+
+config CANOPENNODE_LEDS
+	bool "CANopen LED indicators"
+	depends on $(dt_chosen_enabled,$(DT_CHOSEN_ZEPHYR_CANOPEN_GREEN_LED)) && \
+		   $(dt_chosen_enabled,$(DT_CHOSEN_ZEPHYR_CANOPEN_RED_LED))
+	default y
+	select GPIO
+	help
+	  Enable support for CANopen LED indicators according to the CiA
+	  303-3 specification.
+
 config CANOPENNODE_LEDS_BICOLOR
 	bool "CANopen bicolor LED indicator"
+	depends on CANOPENNODE_LEDS
 	help
 	  Handle CANopen LEDs as one bicolor LED, favoring the red LED
 	  over the green LED in accordance with the CiA 303-3
 	  specification.
 
-config CANOPENNODE_STORAGE_SUBTREE
-	string "Settings subtree name for CANopen storage"
-	default "canopen"
+choice CANOPENNODE_LSS
+	prompt "CANopen layer settings service (LSS) support"
+	default CANOPENNODE_LSS_DISABLED
 	help
-	  Settings subtree name for CANopen storage
+	  Support for CANopen layer settings service (LSS) according to
+	  the CiA 305 specification.
+
+config CANOPENNODE_LSS_DISABLED
+	bool "LSS disabled"
+
+config CANOPENNODE_LSS_MASTER
+	bool "LSS master"
+
+config CANOPENNODE_LSS_SLAVE
+	bool "LSS slave"
+
+endchoice
 
 config CANOPENNODE_PROGRAM_DOWNLOAD
 	bool "CANopen program download"

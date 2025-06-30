@@ -35,9 +35,18 @@ if(CONFIG_CANOPENNODE)
     ${CANOPENNODE_DIR}/storage/CO_storage.c
     CO_driver.c
     canopennode.c
+  )
+
+  zephyr_library_sources_ifdef(CONFIG_CANOPENNODE_STORAGE
     canopen_storage.c
   )
 
-  zephyr_library_sources_ifdef(CONFIG_CANOPENNODE_PROGRAM_DOWNLOAD canopen_program.c)
+  zephyr_library_sources_ifdef(CONFIG_CANOPENNODE_PROGRAM_DOWNLOAD
+    canopen_program.c
+  )
+  
+  zephyr_linker_sources(SECTIONS
+    iterable_sections.ld
+  )
 
 endif()

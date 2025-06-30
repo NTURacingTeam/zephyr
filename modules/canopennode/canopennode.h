@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2019 Vestas Wind Systems A/S
- * Copyright (c) 2024 National Taiwan University Racing Team
+ * Copyright (c) 2025 National Taiwan University Racing Team
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -34,46 +34,19 @@
 extern "C" {
 #endif
 
-#define CANOPEN_STORAGE_ENTRY(PARAM, IDX, ATTR)                                                    \
-	{                                                                                          \
-		.key = #PARAM,                                                                     \
-		.addr = (void *)&PARAM,                                                            \
-		.len = sizeof(PARAM),                                                              \
-		.subIndexOD = IDX,                                                                 \
-		.attr = ATTR,                                                                      \
+/* macro ---------------------------------------------------------------------*/
+#define CANOPEN_STORAGE_ENTRY_DEFINE(_group, _idx, _attr)                                          \
+	const STRUCT_SECTION_ITERABLE(canopen_storage_entry) = {                                   \
+		.key = STRINGIFY(_group), .addr = (void *)&_group, .len = sizeof(_group),          \
+				 .subIndexOD = _idx, .attr = _attr,                                \
 	}
 
-#define CANOPEN_STORAGE_DEFINE(NAME, ...) static CO_storage_entry_t NAME[] = {__VA_ARGS__}
+/* function declaration ------------------------------------------------------*/
+int canopen_reset_communication();
 
-struct canopen {
-	const struct device *can_dev;
-	uint8_t node_id;
-	uint16_t bitrate;
-#if CO_CONFIG_EM & CO_CONFIG_EM_STATUS_BITS
-	OD_entry_t *status_bits;
-#endif /* CO_CONFIG_EM */
-#if OD_CNT_NMT == 1
-	CO_NMT_control_t nmt_control;
-#endif /* OD_CNT_NMT */
-#if CO_CONFIG_LEDS & CO_CONFIG_LEDS_ENABLE
-	struct gpio_dt_spec green_led;
-	struct gpio_dt_spec red_led;
-#endif /* CO_CONFIG_LEDS */
-#if CO_CONFIG_STORAGE & CO_CONFIG_STORAGE_ENABLE
-	CO_storage_t storage; /* should be included in CO_t  */
-	CO_storage_entry_t *storage_entries;
-	size_t storage_entries_count;
-#endif /* CO_CONFIG_STORAGE */
-	CO_t *CO;
-};
+int canopen_storage_init(CO_CANmodule_t *module);
 
-int canopen_init(struct canopen *co);
-
-int canopen_reset_communication(struct canopen *co);
-
-int canopen_storage_init(struct canopen *co);
-
-int canopen_storage_process(struct canopen *co);
+int canopen_storage_process();
 
 /**
  * @brief Attach CANopen object dictionary program download handlers.

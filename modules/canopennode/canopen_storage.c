@@ -1,17 +1,22 @@
 /*
  * Copyright (c) 2019 Vestas Wind Systems A/S
- * Copyright (c) 2024 National Taiwan University Racing Team
+ * Copyright (c) 2025 National Taiwan University Racing Team
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
+// glibc includes
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <sys/queue.h>
 
+// zephyr includes
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
+#include <zephyr/sys/iterable_sections.h>
 
+// canopennode includes
 #include <CANopen.h>
 #include <storage/CO_storage.h>
 #include "OD.h"
@@ -20,35 +25,42 @@
 
 LOG_MODULE_REGISTER(canopen_storage, CONFIG_CANOPEN_LOG_LEVEL);
 
-#if CO_CONFIG_STORAGE & CO_CONFIG_STORAGE_ENABLE
+/* type ----------------------------------------------------------------------*/
+struct canopen_storage_ctx {
+	int settings_error;
+	CO_storage_t storage;
+	CO_storage_entry_t *storage_entries;
+	size_t num_entry;
+};
 
+/* static function declaration -----------------------------------------------*/
 static ODR_t store(CO_storage_entry_t *entry, CO_CANmodule_t *CANmodule);
-
 static ODR_t restore(CO_storage_entry_t *entry, CO_CANmodule_t *CANmodule);
 
 static int canopen_settings_set(const char *key, size_t len_rd, settings_read_cb read_cb,
 				void *cb_arg);
 
-/**
- * @brief Global pointer to the canopen instance since we are unable to retrieve it from settings
- * handlers.
- */
-static struct canopen *coo;
-static bool settings_set_err = false;
+/* static variable -----------------------------------------------------------*/
+static struct canopen_storage_ctx g_ctx = {
+	.settings_error = 0,
+	.storage =
+		{
+			.enabled = false,
+		},
+};
 
 SETTINGS_STATIC_HANDLER_DEFINE(canopen, CONFIG_CANOPENNODE_STORAGE_SUBTREE, NULL,
 			       canopen_settings_set, NULL, NULL);
 
-int canopen_storage_init(struct canopen *co)
+/* function definition -------------------------------------------------------*/
+int canopen_storage_init(CO_CANmodule_t *module)
 {
 	int err;
-	CO_t *CO = co->CO;
 	OD_entry_t *OD_1010;
 	OD_entry_t *OD_1011;
 
-	coo = co;
-
-	co->storage.enabled = false;
+	STRUCT_SECTION_GET(canopen_storage_entry, 0, &g_ctx.storage_entries);
+	STRUCT_SECTION_COUNT(canopen_storage_entry, &g_ctx.num_entry);
 
 	OD_1010 = OD_find(OD, OD_H1010_STORE_PARAMETERS);
 	if (OD_1010 == NULL) {
@@ -62,8 +74,8 @@ int canopen_storage_init(struct canopen *co)
 		return -EINVAL;
 	}
 
-	err = CO_storage_init(&co->storage, CO->CANmodule, OD_1010, OD_1011, store, restore,
-			      co->storage_entries, co->storage_entries_count);
+	err = CO_storage_init(&g_ctx.storage, module, OD_1010, OD_1011, store, restore,
+			      g_ctx.storage_entries, g_ctx.num_entry);
 	if (err != CO_ERROR_NO) {
 		LOG_ERR("CO_storage_init failed (err %d)", err);
 		return -EIO;
@@ -81,24 +93,22 @@ int canopen_storage_init(struct canopen *co)
 		return err;
 	}
 
-	// settings_set_err is set if error occurs during settings loading
-	if (settings_set_err) {
-		LOG_ERR("failed to load some settings data");
-		return -EIO;
+	if (g_ctx.settings_error < 0) {
+		return g_ctx.settings_error;
 	}
 
-	co->storage.enabled = true;
+	g_ctx.storage.enabled = true;
 
 	return 0;
 }
 
-int canopen_storage_process(struct canopen *co)
+int canopen_storage_process()
 {
 	int err;
 
-	for (size_t i = 0; i < co->storage_entries_count; i++) {
-		if (co->storage_entries[i].attr & CO_storage_auto) {
-			err = store(&co->storage_entries[i], co->CO->CANmodule);
+	for (size_t i = 0; i < g_ctx.num_entry; i++) {
+		if (g_ctx.storage_entries[i].attr & CO_storage_auto) {
+			err = store(&g_ctx.storage_entries[i], g_ctx.storage.CANmodule);
 			if (err != ODR_OK) {
 				return err;
 			}
@@ -108,6 +118,7 @@ int canopen_storage_process(struct canopen *co)
 	return 0;
 }
 
+/* static function definition ------------------------------------------------*/
 static ODR_t store(CO_storage_entry_t *entry, CO_CANmodule_t *CANmodule)
 {
 	int err;
@@ -149,14 +160,14 @@ static int canopen_settings_set(const char *key, size_t len_rd, settings_read_cb
 	ssize_t len;
 	size_t i;
 
-	for (i = 0; i < coo->storage_entries_count; i++) {
-		if (settings_name_steq(key, coo->storage_entries[i].key, &next) && !next) {
-			len = read_cb(cb_arg, coo->storage_entries[i].addr,
-				      coo->storage_entries[i].len);
+	for (i = 0; i < g_ctx.num_entry; i++) {
+		if (settings_name_steq(key, g_ctx.storage_entries[i].key, &next) && !next) {
+			len = read_cb(cb_arg, g_ctx.storage_entries[i].addr,
+				      g_ctx.storage_entries[i].len);
 			if (len < 0) {
 				LOG_ERR("failed to load settings data %s (err %d)",
-					coo->storage_entries[i].key, len);
-				settings_set_err = true;
+					g_ctx.storage_entries[i].key, len);
+				g_ctx.settings_error = len;
 				return len;
 			}
 
@@ -166,5 +177,3 @@ static int canopen_settings_set(const char *key, size_t len_rd, settings_read_cb
 
 	return -ENOENT;
 }
-
-#endif /* CO_CONFIG_STORAGE */

@@ -1,85 +1,141 @@
 /*
  * Copyright (c) 2019 Vestas Wind Systems A/S
- * Copyright (c) 2024 National Taiwan University Racing Team
+ * Copyright (c) 2025 National Taiwan University Racing Team
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <canopennode.h>
 
+// glibc includes
 #include <stdbool.h>
 #include <stddef.h>
 
+// zephyr includes
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/devicetree.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/init.h>
 #include <zephyr/logging/log_ctrl.h>
+#include <zephyr/sys/util.h>
 
+// canopennode includes
 #include <CANopen.h>
 #include <storage/CO_storage.h>
 #include "OD.h"
 
 LOG_MODULE_REGISTER(canopennode, CONFIG_CANOPEN_LOG_LEVEL);
 
-static void mainline_thread(void *p1, void *p2, void *p3);
+/* macro ---------------------------------------------------------------------*/
+#define NMT_CONTROL                                                                                \
+	(COND_CODE_1(CONFIG_CANOPENNODE_NMT_STARTUP_TO_OPERATIONAL, (CO_NMT_STARTUP_TO_OPERATIONAL), (0)) |                                             \
+		 COND_CODE_1(CONFIG_CANOPENNODE_NMT_ERR_ON_BUSOFF_HB, (CO_NMT_ERR_ON_BUSOFF_HB), (0)) |                                      \
+			      (CONFIG_CANOPENNODE_NMT_ERR_ON_ERR_REG_MASK                          \
+				       ? CO_NMT_ERR_ON_ERR_REG |                                   \
+						 CONFIG_CANOPENNODE_NMT_ERR_ON_ERR_REG_MASK        \
+				       : 0) |                                                      \
+			      COND_CODE_1(CONFIG_CANOPENNODE_NMT_ERR_TO_STOPPED, (CO_NMT_ERR_TO_STOPPED), (0)) |                           \
+					   COND_CODE_1(CONFIG_CANOPENNODE_NMT_ERR_FREE_TO_OPERATIONAL, (CO_NMT_ERR_FREE_TO_OPERATIONAL), (0)))
+/* type ----------------------------------------------------------------------*/
+struct canopen_ctx {
+	uint8_t node_id;
+	uint16_t bitrate;
 
-/**
- * @brief CANopen sync thread.
- *
- * The CANopen real-time sync thread processes SYNC RPDOs and TPDOs
- * through the CANopenNode stack with an interval of 1 millisecond.
- *
- * @param p1 Unused
- * @param p2 Unused
- * @param p3 Unused
- */
+	k_tid_t mainline_tid;
+	k_tid_t sync_tid;
+
+	struct k_thread mainline_thread;
+	struct k_thread sync_thread;
+
+#if CO_CONFIG_EM & CO_CONFIG_EM_STATUS_BITS
+	OD_entry_t *status_bits;
+#endif
+	CO_t *CO;
+};
+
+/* static function declaration -----------------------------------------------*/
+static int canopen_init(struct canopen_ctx *co);
+static int canopen_reset_communication_impl(struct canopen_ctx *co);
+static void mainline_thread(void *p1, void *p2, void *p3);
 static void sync_thread(void *p1, void *p2, void *p3);
 
-static k_tid_t mainline_tid = NULL;
-static k_tid_t sync_tid = NULL;
+static int init();
 
-static struct k_thread mainline_thread_data;
-static struct k_thread sync_thread_data;
+/* static variable -----------------------------------------------------------*/
+static const struct device *can_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus));
+
+#if CONFIG_CANOPENNODE_LEDS
+static const struct gpio_dt_spec green_led =
+	GPIO_DT_SPEC_GET(DT_CHOSEN(zephyr_canopen_green_led), gpios);
+static const struct gpio_dt_spec red_led =
+	GPIO_DT_SPEC_GET(DT_CHOSEN(zephyr_canopen_red_led), gpios);
+#endif
+
+static struct canopen_ctx g_ctx = {
+	.node_id = CONFIG_CANOPENNODE_NODE_ID,
+	.bitrate = CONFIG_CANOPENNODE_BITRATE,
+	.mainline_tid = NULL,
+	.sync_tid = NULL,
+};
 
 K_THREAD_STACK_DEFINE(mainline_thread_stack, CONFIG_CANOPENNODE_MAINLINE_THREAD_STACK_SIZE);
 K_THREAD_STACK_DEFINE(sync_thread_stack, CONFIG_CANOPENNODE_SYNC_THREAD_STACK_SIZE);
 
-int canopen_init(struct canopen *co)
+SYS_INIT(init, APPLICATION, CONFIG_CANOPENNODE_INIT_PRIORITY);
+
+/* function definition -------------------------------------------------------*/
+int canopen_reset_communication()
+{
+	return canopen_reset_communication_impl(&g_ctx);
+}
+
+/* static function declaration -----------------------------------------------*/
+static int canopen_init(struct canopen_ctx *co)
 {
 	int err;
 
-	if (!device_is_ready(co->can_dev)) {
+	if (!device_is_ready(can_dev)) {
 		LOG_ERR("CAN device not ready");
 		return -ENODEV;
 	}
 
-#if CO_CONFIG_LEDS & CO_CONFIG_LEDS_ENABLE
-	if (!gpio_is_ready_dt(&co->green_led)) {
+#if CONFIG_CANOPENNODE_LEDS
+	if (!gpio_is_ready_dt(&green_led)) {
 		LOG_ERR("green LED device not ready");
 		return -ENODEV;
 	}
 
-	if (!gpio_is_ready_dt(&co->red_led)) {
+	if (!gpio_is_ready_dt(&red_led)) {
 		LOG_ERR("red LED device not ready");
 		return -ENODEV;
 	}
 
-	gpio_pin_set_dt(&co->green_led, 0);
-	gpio_pin_set_dt(&co->red_led, 0);
-#endif /* CO_CONFIG_LEDS */
+	err = gpio_pin_configure_dt(&green_led, GPIO_OUTPUT_INACTIVE);
+	if (err < 0) {
+		LOG_ERR("Failed to configure green LED (err %d)", err);
+		return err;
+	}
 
-	co->CO = CO_new(NULL, NULL);
+	err = gpio_pin_configure_dt(&red_led, GPIO_OUTPUT_INACTIVE);
+	if (err < 0) {
+		LOG_ERR("Failed to configure red LED (err %d)", err);
+		return err;
+	}
+#endif /* CONFIG_CANOPENNODE_LEDS */
 
-#if CO_CONFIG_STORAGE & CO_CONFIG_STORAGE_ENABLE
-	err = canopen_storage_init(co);
+	g_ctx.CO = CO_new(NULL, NULL);
+
+#ifdef CONFIG_CANOPENNODE_STORAGE
+	err = canopen_storage_init(g_ctx.CO->CANmodule);
 	if (err < 0) {
 		LOG_ERR("CO_storage_init failed (err %d)", err);
 		return -EIO;
 	}
-#endif /* CO_CONFIG_STORAGE */
+#endif
 
-	err = canopen_reset_communication(co);
+	err = canopen_reset_communication_impl(co);
 	if (err < 0) {
 		LOG_ERR("failed to reset canopen communication (err %d)", err);
 		return -EIO;
@@ -88,40 +144,43 @@ int canopen_init(struct canopen *co)
 	return 0;
 }
 
-int canopen_reset_communication(struct canopen *co)
+static int canopen_reset_communication_impl(struct canopen_ctx *co)
 {
 	int err;
 	uint32_t error_info;
 	CO_t *CO = co->CO;
-	uint16_t first_hb_time_ms = 0;
-#if OD_CNT_NMT == 1
+	uint16_t first_hb_time_ms;
 	OD_entry_t *first_hb_time;
-#endif /* OD_CNT_NMT */
-#if CO_CONFIG_LSS & CO_CONFIG_LSS_SLAVE
+#if CONFIG_CANOPENNODE_LSS_SLAVE
 	OD_entry_t *identity;
 	uint32_t vendor_id;
 	uint32_t product_code;
 	uint32_t revision_number;
 	uint32_t serial_number;
-#endif /* CO_CONFIG_LSS */
+#endif
 
-	if (mainline_tid != NULL) {
-		/* lock all mutecies before aborting threads to ensure they are not locked when
-		 * aborted */
+	if (co->mainline_tid != NULL) {
+		/*
+		 * Lock all mutecies before aborting threads to ensure they are not
+		 * locked when aborted, with limited timeout to avoid deadlock.
+		 */
 		while (true) {
-			if (k_mutex_lock(&CO->CANmodule->can_send_mutex, K_MSEC(100)) < 0 ||
-			    k_mutex_lock(&CO->CANmodule->od_mutex, K_MSEC(100)) < 0 ||
-			    k_mutex_lock(&CO->CANmodule->emcy_mutex, K_MSEC(100)) < 0) {
-				continue;
+			if (k_mutex_lock(&CO->CANmodule->can_send_mutex, K_MSEC(100)) < 0) {
+				/* does nothing */
+			} else if (k_mutex_lock(&CO->CANmodule->od_mutex, K_MSEC(100)) < 0) {
+				k_mutex_unlock(&CO->CANmodule->can_send_mutex);
+			} else if (k_mutex_lock(&CO->CANmodule->emcy_mutex, K_MSEC(100)) < 0) {
+				k_mutex_unlock(&CO->CANmodule->can_send_mutex);
+				k_mutex_unlock(&CO->CANmodule->od_mutex);
 			} else {
 				break;
 			}
 		}
 
-		k_thread_abort(mainline_tid);
-		k_thread_abort(sync_tid);
-		mainline_tid = NULL;
-		sync_tid = NULL;
+		k_thread_abort(co->mainline_tid);
+		k_thread_abort(co->sync_tid);
+		co->mainline_tid = NULL;
+		co->sync_tid = NULL;
 
 		k_mutex_unlock(&CO->CANmodule->can_send_mutex);
 		k_mutex_unlock(&CO->CANmodule->od_mutex);
@@ -129,13 +188,13 @@ int canopen_reset_communication(struct canopen *co)
 	}
 
 	CO_CANmodule_disable(CO->CANmodule);
-	err = CO_CANinit(CO, (void *)co->can_dev, co->bitrate);
+	err = CO_CANinit(CO, (void *)can_dev, co->bitrate);
 	if (err != CO_ERROR_NO) {
 		LOG_ERR("CO_CANinit failed (err %d)", err);
 		return -EIO;
 	}
 
-#if CO_CONFIG_LSS & CO_CONFIG_LSS_SLAVE
+#if CONFIG_CANOPENNODE_LSS_SLAVE
 	if ((identity = OD_find(OD, OD_H1018_IDENTITY_OBJECT)) == NULL ||
 	    OD_get_u32(identity, 1, &vendor_id, true) != ODR_OK ||
 	    OD_get_u32(identity, 2, &product_code, true) != ODR_OK ||
@@ -160,26 +219,24 @@ int canopen_reset_communication(struct canopen *co)
 		LOG_ERR("CO_LSSinit failed (err %d)", err);
 		return -EIO;
 	}
-#endif /* CO_CONFIG_LSS */
+#endif /* CONFIG_CANOPENNODE_LSS_SLAVE */
 
-#if OD_CNT_NMT == 1
 	if ((first_hb_time = OD_find(OD, OD_H1017_PRODUCER_HB_TIME)) == NULL ||
 	    OD_get_u16(first_hb_time, 0, &first_hb_time_ms, true) != ODR_OK) {
 		LOG_ERR("object dictionary error at entry 0x1017");
 		return -EINVAL;
 	}
-#endif /* OD_CNT_NMT */
 
-	err = CO_CANopenInit(
-		CO, NULL, NULL, OD,
+	err = CO_CANopenInit(CO, NULL, NULL, OD,
 #if CO_CONFIG_EM & CO_CONFIG_EM_STATUS_BITS
-		co->status_bits,
+			     co->status_bits,
 #else
-		NULL,
+			     NULL,
 #endif /* CO_CONFIG_EM */
-		co->nmt_control, first_hb_time_ms, CONFIG_CANOPENNODE_SDO_SRV_TIMEOUT_TIME,
-		CONFIG_CANOPENNODE_SDO_CLI_TIMEOUT_TIME,
-		IS_ENABLED(CONFIG_CANOPENNODE_SDO_CLI_BLOCK), co->node_id, &error_info);
+			     NMT_CONTROL, first_hb_time_ms, CONFIG_CANOPENNODE_SDO_SRV_TIMEOUT_TIME,
+			     CONFIG_CANOPENNODE_SDO_CLI_TIMEOUT_TIME,
+			     IS_ENABLED(CONFIG_CANOPENNODE_SDO_CLI_BLOCK), co->node_id,
+			     &error_info);
 	if (err == CO_ERROR_OD_PARAMETERS) {
 		LOG_ERR("object dictionary error at entry 0x%X", error_info);
 		return -EINVAL;
@@ -200,22 +257,23 @@ int canopen_reset_communication(struct canopen *co)
 
 	CO_CANsetNormalMode(CO->CANmodule);
 
-	mainline_tid = k_thread_create(&mainline_thread_data, mainline_thread_stack,
-				       K_THREAD_STACK_SIZEOF(mainline_thread_stack),
-				       mainline_thread, co, NULL, NULL,
-				       CONFIG_CANOPENNODE_MAINLINE_THREAD_PRIORITY, 0, K_NO_WAIT);
-	k_thread_name_set(mainline_tid, "canopen_mainline");
-	sync_tid = k_thread_create(&sync_thread_data, sync_thread_stack,
-				   K_THREAD_STACK_SIZEOF(sync_thread_stack), sync_thread, co, NULL,
-				   NULL, CONFIG_CANOPENNODE_SYNC_THREAD_PRIORITY, 0, K_NO_WAIT);
-	k_thread_name_set(sync_tid, "canopen_sync");
+	co->mainline_tid = k_thread_create(
+		&co->mainline_thread, mainline_thread_stack,
+		K_THREAD_STACK_SIZEOF(mainline_thread_stack), mainline_thread, co, NULL, NULL,
+		CONFIG_CANOPENNODE_MAINLINE_THREAD_PRIORITY, 0, K_NO_WAIT);
+	k_thread_name_set(co->mainline_tid, "canopen_mainline");
+
+	co->sync_tid = k_thread_create(
+		&co->sync_thread, sync_thread_stack, K_THREAD_STACK_SIZEOF(sync_thread_stack),
+		sync_thread, co, NULL, NULL, CONFIG_CANOPENNODE_SYNC_THREAD_PRIORITY, 0, K_NO_WAIT);
+	k_thread_name_set(co->sync_tid, "canopen_sync");
 
 	return 0;
 }
 
 static void mainline_thread(void *p1, void *p2, void *p3)
 {
-	struct canopen *co = (struct canopen *)p1;
+	struct canopen_ctx *co = p1;
 	CO_t *CO = co->CO;
 	CO_NMT_reset_cmd_t reset;
 	uint32_t start;       /* cycles */
@@ -228,32 +286,32 @@ static void mainline_thread(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p3);
 
 	while (true) {
-		next = 10000; /* 10 ms */
+		next = CONFIG_CANOPENNODE_MAINLINE_THREAD_PERIOD;
 		start = k_cycle_get_32();
 
 		reset = CO_process(CO, false, elapsed, &next);
 
-#if CO_CONFIG_LEDS & CO_CONFIG_LEDS_ENABLE
+#if CONFIG_CANOPENNODE_LEDS
 #ifdef CONFIG_CANOPENNODE_LEDS_BICOLOR
 		/* flavors red LED when both on */
-		gpio_pin_set_dt(&co->->green_led, CO_LED_GREEN(CO->LEDs, CO_LED_CANopen) &&
-							  !CO_LED_RED(CO->LEDs, CO_LED_CANopen));
+		gpio_pin_set_dt(&red_led, CO_LED_GREEN(CO->LEDs, CO_LED_CANopen) &&
+						  !CO_LED_RED(CO->LEDs, CO_LED_CANopen));
 #else
-		gpio_pin_set_dt(&co->green_led, CO_LED_GREEN(CO->LEDs, CO_LED_CANopen));
-#endif /* CONFIG_CANOPENNODE_LEDS_BICOLOR */
-		gpio_pin_set_dt(&co->red_led, CO_LED_RED(CO->LEDs, CO_LED_CANopen));
-#endif /* CO_CONFIG_LEDS */
+		gpio_pin_set_dt(&green_led, CO_LED_GREEN(CO->LEDs, CO_LED_CANopen));
+#endif
+		gpio_pin_set_dt(&red_led, CO_LED_RED(CO->LEDs, CO_LED_CANopen));
+#endif
 
-#if CO_CONFIG_STORAGE & CO_CONFIG_STORAGE_ENABLE
+#if CONFIG_CANOPENNODE_STORAGE
 		canopen_storage_process(co);
-#endif /* CO_CONFIG_STORAGE */
+#endif
 
 		if (reset == CO_RESET_COMM) {
 			LOG_INF("CANopen communication reset");
-			canopen_reset_communication(co);
+			canopen_reset_communication_impl(co);
 		} else if (reset == CO_RESET_APP) {
 			LOG_INF("CANopen application reset");
-			// log panic to flush logs before reboot
+			/* log panic to flush logs before reboot */
 			log_panic();
 
 			sys_reboot(SYS_REBOOT_COLD);
@@ -268,26 +326,38 @@ static void mainline_thread(void *p1, void *p2, void *p3)
 
 static void sync_thread(void *p1, void *p2, void *p3)
 {
-	struct canopen *co = (struct canopen *)p1;
+	struct canopen_ctx *co = p1;
 	CO_t *CO = co->CO;
 	uint32_t start;       /* cycles */
 	uint32_t stop;        /* cycles */
 	uint32_t delta;       /* cycles */
 	uint32_t elapsed = 0; /* microseconds */
 	uint32_t next;        /* microseconds */
+#ifndef CONFIG_CANOPENNODE_SYNC_DISABLED
 	CO_SYNC_status_t sync;
+#endif
 
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
 
 	while (true) {
-		next = 1000;
+		next = CONFIG_CANOPENNODE_SYNC_THREAD_PERIOD;
 		start = k_cycle_get_32();
 
 		CO_LOCK_OD(CO->CANmodule);
+
+#ifndef CONFIG_CANOPENNODE_SYNC_DISABLED
 		sync = CO_process_SYNC(CO, elapsed, &next);
+#endif
+
+#ifdef CONFIG_CANOPENNODE_PDO_SYNC
 		CO_process_RPDO(CO, sync == CO_SYNC_RX_TX, elapsed, &next);
 		CO_process_TPDO(CO, sync == CO_SYNC_RX_TX, elapsed, &next);
+#else
+		CO_process_RPDO(CO, false, elapsed, &next);
+		CO_process_TPDO(CO, false, elapsed, &next);
+#endif
+
 		CO_UNLOCK_OD(CO->CANmodule);
 
 		k_sleep(K_USEC(next));
@@ -295,4 +365,9 @@ static void sync_thread(void *p1, void *p2, void *p3)
 		delta = stop - start;
 		elapsed = k_cyc_to_us_near32(delta);
 	}
+}
+
+static int init()
+{
+	return canopen_init(&g_ctx);
 }
