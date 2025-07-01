@@ -44,14 +44,16 @@ extern "C" {
 /* type ----------------------------------------------------------------------*/
 typedef void (*canopen_time_callback_t)(time_t epoch, void *user_data);
 
+/* exported variable ---------------------------------------------------------*/
+extern CO_t *CO;
+
 /* function declaration ------------------------------------------------------*/
 int canopen_reset_communication();
 
-int canopen_time_init(CO_t *co);
+int canopen_time_init();
 void canopen_time_set_callback(canopen_time_callback_t callback, void *user_data);
 
-int canopen_storage_init(CO_t *co);
-
+int canopen_storage_init();
 int canopen_storage_process();
 
 /**

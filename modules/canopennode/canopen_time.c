@@ -33,7 +33,6 @@ struct canopen_time_ctx {
 	struct k_work work;
 	canopen_time_callback_t callback;
 	void *user_data;
-	CO_t *co;
 };
 
 /* static function declaration -----------------------------------------------*/
@@ -49,11 +48,9 @@ static struct canopen_time_ctx g_ctx = {
 };
 
 /* function definition -------------------------------------------------------*/
-int canopen_time_init(CO_t *co)
+int canopen_time_init()
 {
-	g_ctx.co = co;
-
-	CO_TIME_initCallbackPre(co->TIME, &g_ctx, time_callback_pre);
+	CO_TIME_initCallbackPre(CO->TIME, &g_ctx, time_callback_pre);
 
 	return 0;
 }
@@ -76,16 +73,15 @@ static void time_work(struct k_work *work)
 {
 	struct canopen_time_ctx *ctx = CONTAINER_OF(work, struct canopen_time_ctx, work);
 
-	CO_NMT_internalState_t NMTstate = CO_NMT_getInternalState(ctx->co->NMT);
+	CO_NMT_internalState_t NMTstate = CO_NMT_getInternalState(CO->NMT);
 	if (NMTstate != CO_NMT_PRE_OPERATIONAL && NMTstate != CO_NMT_OPERATIONAL) {
 		return;
 	}
 
-	CO_TIME_process(ctx->co->TIME, true, 0);
-	LOG_DBG("Received TIME object, days: %d, ms: %d", ctx->co->TIME->days, ctx->co->TIME->ms);
+	CO_TIME_process(CO->TIME, true, 0);
+	LOG_DBG("Received TIME object, days: %d, ms: %d", CO->TIME->days, CO->TIME->ms);
 
-	time_t epoch =
-		((time_t)ctx->co->TIME->days * SEC_OF_DAY + ctx->co->TIME->ms / 1000) + CO_SEC_REF;
+	time_t epoch = ((time_t)CO->TIME->days * SEC_OF_DAY + CO->TIME->ms / 1000) + CO_SEC_REF;
 
 	if (ctx->callback) {
 		ctx->callback(epoch, ctx->user_data);

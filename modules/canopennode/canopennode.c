@@ -48,8 +48,6 @@ struct canopen_ctx {
 
 	struct k_thread mainline_thread;
 	struct k_thread sync_thread;
-
-	CO_t *CO;
 };
 
 /* static function declaration -----------------------------------------------*/
@@ -63,6 +61,9 @@ static void wakeup_mainline(void *object);
 static void wakeup_sync(void *object);
 
 static int init();
+
+/* exported variable ---------------------------------------------------------*/
+CO_t *CO = NULL;
 
 /* static variable -----------------------------------------------------------*/
 static const struct device *can_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus));
@@ -126,20 +127,28 @@ static int canopen_init(struct canopen_ctx *co)
 	}
 #endif /* CONFIG_CANOPENNODE_LEDS */
 
-	g_ctx.CO = CO_new(NULL, NULL);
-
-#ifdef CONFIG_CANOPENNODE_STORAGE
-	err = canopen_storage_init(g_ctx.CO);
-	if (err < 0) {
-		LOG_ERR("CO_storage_init failed (err %d)", err);
-		return -EIO;
-	}
-#endif
+	CO = CO_new(NULL, NULL);
 
 	err = canopen_reset_communication_impl(co);
 	if (err < 0) {
 		LOG_ERR("failed to reset canopen communication (err %d)", err);
-		return -EIO;
+		return err;
+	}
+
+	if (IS_ENABLED(CONFIG_CANOPENNODE_TIME)) {
+		err = canopen_time_init();
+		if (err < 0) {
+			LOG_ERR("failed to initialize time (err %d)", err);
+			return err;
+		}
+	}
+
+	if (IS_ENABLED(CONFIG_CANOPENNODE_STORAGE)) {
+		err = canopen_storage_init();
+		if (err < 0) {
+			LOG_ERR("failed to initialize storage (err %d)", err);
+			return err;
+		}
 	}
 
 	return 0;
@@ -149,7 +158,6 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 {
 	int err;
 	uint32_t error_info;
-	CO_t *CO = co->CO;
 	uint16_t first_hb_time_ms;
 	OD_entry_t *first_hb_time;
 #if CONFIG_CANOPENNODE_LSS_SLAVE
@@ -276,13 +284,14 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 
 	co->mainline_tid = k_thread_create(
 		&co->mainline_thread, mainline_thread_stack,
-		K_THREAD_STACK_SIZEOF(mainline_thread_stack), mainline_thread, co, NULL, NULL,
+		K_THREAD_STACK_SIZEOF(mainline_thread_stack), mainline_thread, NULL, NULL, NULL,
 		CONFIG_CANOPENNODE_MAINLINE_THREAD_PRIORITY, 0, K_NO_WAIT);
 	k_thread_name_set(co->mainline_tid, "canopen_mainline");
 
-	co->sync_tid = k_thread_create(
-		&co->sync_thread, sync_thread_stack, K_THREAD_STACK_SIZEOF(sync_thread_stack),
-		sync_thread, co, NULL, NULL, CONFIG_CANOPENNODE_SYNC_THREAD_PRIORITY, 0, K_NO_WAIT);
+	co->sync_tid =
+		k_thread_create(&co->sync_thread, sync_thread_stack,
+				K_THREAD_STACK_SIZEOF(sync_thread_stack), sync_thread, NULL, NULL,
+				NULL, CONFIG_CANOPENNODE_SYNC_THREAD_PRIORITY, 0, K_NO_WAIT);
 	k_thread_name_set(co->sync_tid, "canopen_sync");
 
 	return 0;
@@ -290,8 +299,6 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 
 static void mainline_thread(void *p1, void *p2, void *p3)
 {
-	struct canopen_ctx *co = p1;
-	CO_t *CO = co->CO;
 	CO_NMT_reset_cmd_t reset;
 	uint32_t start;       /* cycles */
 	uint32_t stop;        /* cycles */
@@ -299,6 +306,7 @@ static void mainline_thread(void *p1, void *p2, void *p3)
 	uint32_t elapsed = 0; /* microseconds */
 	uint32_t next;        /* microseconds */
 
+	ARG_UNUSED(p1);
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
 
@@ -320,12 +328,12 @@ static void mainline_thread(void *p1, void *p2, void *p3)
 #endif
 
 #if CONFIG_CANOPENNODE_STORAGE
-		canopen_storage_process(co);
+		canopen_storage_process();
 #endif
 
 		if (reset == CO_RESET_COMM) {
 			LOG_INF("CANopen communication reset");
-			canopen_reset_communication_impl(co);
+			canopen_reset_communication();
 		} else if (reset == CO_RESET_APP) {
 			LOG_INF("CANopen application reset");
 			/* log panic to flush logs before reboot */
@@ -343,8 +351,6 @@ static void mainline_thread(void *p1, void *p2, void *p3)
 
 static void sync_thread(void *p1, void *p2, void *p3)
 {
-	struct canopen_ctx *co = p1;
-	CO_t *CO = co->CO;
 	uint32_t start;       /* cycles */
 	uint32_t stop;        /* cycles */
 	uint32_t delta;       /* cycles */
@@ -354,6 +360,7 @@ static void sync_thread(void *p1, void *p2, void *p3)
 	CO_SYNC_status_t sync;
 #endif
 
+	ARG_UNUSED(p1);
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
 

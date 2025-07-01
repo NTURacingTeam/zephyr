@@ -26,7 +26,6 @@ LOG_MODULE_REGISTER(canopen_storage, CONFIG_CANOPEN_LOG_LEVEL);
 /* type ----------------------------------------------------------------------*/
 struct canopen_storage_ctx {
 	int settings_error;
-	CO_t *co;
 	CO_storage_t storage;
 	CO_storage_entry_t *storage_entries;
 	size_t num_entry;
@@ -52,13 +51,11 @@ SETTINGS_STATIC_HANDLER_DEFINE(canopen, CONFIG_CANOPENNODE_STORAGE_SUBTREE, NULL
 			       canopen_settings_set, NULL, NULL);
 
 /* function definition -------------------------------------------------------*/
-int canopen_storage_init(CO_t *co)
+int canopen_storage_init()
 {
 	int err;
 	OD_entry_t *OD_1010;
 	OD_entry_t *OD_1011;
-
-	g_ctx.co = co;
 
 	STRUCT_SECTION_GET(canopen_storage_entry, 0, &g_ctx.storage_entries);
 	STRUCT_SECTION_COUNT(canopen_storage_entry, &g_ctx.num_entry);
@@ -75,7 +72,7 @@ int canopen_storage_init(CO_t *co)
 		return -EINVAL;
 	}
 
-	err = CO_storage_init(&g_ctx.storage, co->CANmodule, OD_1010, OD_1011, store, restore,
+	err = CO_storage_init(&g_ctx.storage, CO->CANmodule, OD_1010, OD_1011, store, restore,
 			      g_ctx.storage_entries, g_ctx.num_entry);
 	if (err != CO_ERROR_NO) {
 		LOG_ERR("CO_storage_init failed (err %d)", err);
@@ -109,7 +106,7 @@ int canopen_storage_process()
 
 	for (size_t i = 0; i < g_ctx.num_entry; i++) {
 		if (g_ctx.storage_entries[i].attr & CO_storage_auto) {
-			err = store(&g_ctx.storage_entries[i], g_ctx.co->CANmodule);
+			err = store(&g_ctx.storage_entries[i], CO->CANmodule);
 			if (err != ODR_OK) {
 				return err;
 			}
