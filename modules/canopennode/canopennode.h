@@ -21,11 +21,15 @@
 #ifndef ZEPHYR_MODULES_CANOPENNODE_CANOPENNODE_H_
 #define ZEPHYR_MODULES_CANOPENNODE_CANOPENNODE_H_
 
+// glibc includes
 #include <stdint.h>
+#include <time.h>
 
+// zephyr includes
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 
+// canopennode includes
 #include <CANopen.h>
 #include <storage/CO_storage.h>
 #include "OD.h"
@@ -36,7 +40,8 @@ extern "C" {
 
 /* macro ---------------------------------------------------------------------*/
 #define CANOPEN_STORAGE_ENTRY_DEFINE(_group, _idx, _attr)                                          \
-	const STRUCT_SECTION_ITERABLE(canopen_storage_entry) = {                                   \
+	const STRUCT_SECTION_ITERABLE(canopen_storage_entry,                                       \
+				      CONCAT(__canopen_storage_entry, _group)) = {                 \
 		.key = STRINGIFY(_group), .addr = (void *)&_group, .len = sizeof(_group),          \
 				 .subIndexOD = _idx, .attr = _attr,                                \
 	}

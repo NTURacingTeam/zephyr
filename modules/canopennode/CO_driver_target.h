@@ -71,6 +71,8 @@ extern "C" {
 	 CO_CONFIG_EM_HISTORY | CO_CONFIG_EM_CONSUMER | CO_CONFIG_GLOBAL_FLAG_CALLBACK_PRE |       \
 	 CO_CONFIG_GLOBAL_FLAG_TIMERNEXT)
 
+#define CO_CONFIG_EM_ERR_STATUS_BITS_COUNT (CONFIG_CANOPENNODE_EM_ERR_STATUS_BITS_COUNT)
+
 /* Service data object (SDO) */
 #define CO_CONFIG_SDO_SRV                                                                          \
 	(CO_CONFIG_SDO_SRV_SEGMENTED |                                                             \

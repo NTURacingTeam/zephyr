@@ -76,28 +76,35 @@ int canopen_storage_init()
 			      g_ctx.storage_entries, g_ctx.num_entry);
 	if (err != CO_ERROR_NO) {
 		LOG_ERR("CO_storage_init failed (err %d)", err);
-		return -EIO;
+		err = -EIO;
+		goto err;
 	}
 
 	err = settings_subsys_init();
 	if (err < 0) {
 		LOG_ERR("failed to initialize settings subsystem (err %d)", err);
-		return err;
+		goto err;
 	}
 
 	err = settings_load_subtree(CONFIG_CANOPENNODE_STORAGE_SUBTREE);
 	if (err < 0) {
 		LOG_ERR("failed to load settings subtree (err %d)", err);
-		return err;
+		goto err;
 	}
 
 	if (g_ctx.settings_error < 0) {
-		return g_ctx.settings_error;
+		err = g_ctx.settings_error;
+		goto err;
 	}
 
 	g_ctx.storage.enabled = true;
 
 	return 0;
+
+err:
+	CO_error(CO->em, true, CO_EM_NON_VOLATILE_MEMORY, CO_EMC_HARDWARE, err);
+
+	return err;
 }
 
 int canopen_storage_process()
@@ -131,6 +138,8 @@ static ODR_t store(CO_storage_entry_t *entry, CO_CANmodule_t *CANmodule)
 		return ODR_HW;
 	}
 
+	LOG_INF("Saved CANopen storage group %s to settings %s", entry->key, key);
+
 	return ODR_OK;
 }
 
@@ -147,6 +156,8 @@ static ODR_t restore(CO_storage_entry_t *entry, CO_CANmodule_t *CANmodule)
 		LOG_ERR("failed to delete settings data %s (err %d)", entry->key, err);
 		return ODR_HW;
 	}
+
+	LOG_INF("Deleted CANopen storage group %s from settings %s", entry->key, key);
 
 	return ODR_OK;
 }

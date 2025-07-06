@@ -139,6 +139,13 @@ config CANOPENNODE_HB_CONS_MULTI_CALLBACK
 
 endchoice
 
+config CANOPENNODE_EM_ERR_STATUS_BITS_COUNT
+	int "CANopen error status bits count"
+	default 80
+	range 48 256
+	help
+	  Number of error status bits in CANopenNode.
+
 config CANOPENNODE_SDO_CLI
 	bool "CANopen SDO client support"
 	help
