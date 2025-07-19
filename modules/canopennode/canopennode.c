@@ -282,16 +282,19 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 
 	CO_CANsetNormalMode(CO->CANmodule);
 
-	co->mainline_tid = k_thread_create(
-		&co->mainline_thread, mainline_thread_stack,
-		K_THREAD_STACK_SIZEOF(mainline_thread_stack), mainline_thread, NULL, NULL, NULL,
-		CONFIG_CANOPENNODE_MAINLINE_THREAD_PRIORITY, 0, K_NO_WAIT);
+	/* do not start the threads immediately so that the startup process can
+	resume without intrusion */
+	co->mainline_tid =
+		k_thread_create(&co->mainline_thread, mainline_thread_stack,
+				K_THREAD_STACK_SIZEOF(mainline_thread_stack), mainline_thread, NULL,
+				NULL, NULL, CONFIG_CANOPENNODE_MAINLINE_THREAD_PRIORITY, 0,
+				K_USEC(CONFIG_CANOPENNODE_MAINLINE_THREAD_PERIOD));
 	k_thread_name_set(co->mainline_tid, "canopen_mainline");
 
-	co->sync_tid =
-		k_thread_create(&co->sync_thread, sync_thread_stack,
-				K_THREAD_STACK_SIZEOF(sync_thread_stack), sync_thread, NULL, NULL,
-				NULL, CONFIG_CANOPENNODE_SYNC_THREAD_PRIORITY, 0, K_NO_WAIT);
+	co->sync_tid = k_thread_create(&co->sync_thread, sync_thread_stack,
+				       K_THREAD_STACK_SIZEOF(sync_thread_stack), sync_thread, NULL,
+				       NULL, NULL, CONFIG_CANOPENNODE_SYNC_THREAD_PRIORITY, 0,
+				       K_USEC(CONFIG_CANOPENNODE_SYNC_THREAD_PERIOD));
 	k_thread_name_set(co->sync_tid, "canopen_sync");
 
 	return 0;

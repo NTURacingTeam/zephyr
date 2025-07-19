@@ -392,30 +392,25 @@ void CO_CANmodule_process(CO_CANmodule_t *CANmodule)
 		return;
 	}
 
-	if (state == CAN_STATE_BUS_OFF) {
+	switch (state) {
+	case CAN_STATE_ERROR_WARNING:
+		CANmodule->CANerrorStatus |= CO_CAN_ERRTX_WARNING | CO_CAN_ERRRX_WARNING;
+		break;
+
+	case CAN_STATE_ERROR_PASSIVE:
+		if (!CANmodule->first_tx_msg) {
+			CANmodule->CANerrorStatus |= CO_CAN_ERRTX_PASSIVE | CO_CAN_ERRRX_PASSIVE;
+		}
+		break;
+
+	case CAN_STATE_BUS_OFF:
 		CANmodule->CANerrorStatus |= CO_CAN_ERRTX_BUS_OFF;
-	} else {
-		/* clear flags before recaculation */
+		break;
+
+	default:
 		CANmodule->CANerrorStatus &=
 			~(CO_CAN_ERRTX_BUS_OFF | CO_CAN_ERRRX_PASSIVE | CO_CAN_ERRTX_PASSIVE |
 			  CO_CAN_ERRTX_WARNING | CO_CAN_ERRRX_WARNING);
-
-		if (err_cnt.tx_err_cnt >= 96U) {
-			CANmodule->CANerrorStatus |= CO_CAN_ERRTX_WARNING;
-		}
-
-		if (err_cnt.rx_err_cnt >= 96U) {
-			CANmodule->CANerrorStatus |= CO_CAN_ERRRX_WARNING;
-		}
-
-		if (err_cnt.tx_err_cnt >= 128U && !CANmodule->first_tx_msg) {
-			CANmodule->CANerrorStatus |= CO_CAN_ERRTX_PASSIVE;
-		}
-
-		if (err_cnt.rx_err_cnt >= 128U) {
-			CANmodule->CANerrorStatus |= CO_CAN_ERRRX_PASSIVE;
-		}
-
-		/* TODO: Zephyr lacks an API for reading the rx mailbox overflow counter. */
+		break;
 	}
 }

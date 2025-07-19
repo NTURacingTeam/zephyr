@@ -99,7 +99,7 @@ config CANOPENNODE_NMT_ERR_ON_ERR_REG_MASK
 	default 0x0
 	help
 	  If non-zero, device enters pre-operational or stopped
-	  state if masked CANopen error register is nonzero.
+	  state if masked CANopen error register is non-zero.
 
 config CANOPENNODE_NMT_ERR_TO_STOPPED
 	bool "NMT error to stopped"
