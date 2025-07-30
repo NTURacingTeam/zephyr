@@ -60,6 +60,7 @@ static void sync_thread(void *p1, void *p2, void *p3);
 static void wakeup_mainline(void *object);
 static void wakeup_sync(void *object);
 
+static int od_new_init();
 static int init();
 
 /* exported variable ---------------------------------------------------------*/
@@ -85,6 +86,9 @@ static struct canopen_ctx g_ctx = {
 K_THREAD_STACK_DEFINE(mainline_thread_stack, CONFIG_CANOPENNODE_MAINLINE_THREAD_STACK_SIZE);
 K_THREAD_STACK_DEFINE(sync_thread_stack, CONFIG_CANOPENNODE_SYNC_THREAD_STACK_SIZE);
 
+// Call CO_new() before initialization of other application modules to to ensure
+// is can be accessed even before canopen is initialized.
+SYS_INIT(od_new_init, POST_KERNEL, 99);
 SYS_INIT(init, APPLICATION, CONFIG_CANOPENNODE_INIT_PRIORITY);
 
 /* function definition -------------------------------------------------------*/
@@ -94,7 +98,7 @@ int canopen_reset_communication()
 }
 
 /* static function declaration -----------------------------------------------*/
-static int canopen_init(struct canopen_ctx *co)
+static int canopen_init(struct canopen_ctx *ctx)
 {
 	int err;
 
@@ -127,9 +131,7 @@ static int canopen_init(struct canopen_ctx *co)
 	}
 #endif /* CONFIG_CANOPENNODE_LEDS */
 
-	CO = CO_new(NULL, NULL);
-
-	err = canopen_reset_communication_impl(co);
+	err = canopen_reset_communication_impl(ctx);
 	if (err < 0) {
 		LOG_ERR("failed to reset canopen communication (err %d)", err);
 		return err;
@@ -410,6 +412,12 @@ static void wakeup_sync(void *object)
 	if (co->sync_tid != NULL) {
 		k_wakeup(co->sync_tid);
 	}
+}
+
+static int od_new_init()
+{
+	CO = CO_new(NULL, NULL);
+	return 0;
 }
 
 static int init()
