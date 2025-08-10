@@ -51,8 +51,9 @@ struct canopen_ctx {
 };
 
 /* static function declaration -----------------------------------------------*/
-static int canopen_init(struct canopen_ctx *co);
-static int canopen_reset_communication_impl(struct canopen_ctx *co);
+static int canopen_init(struct canopen_ctx *ctx);
+static int canopen_reset_communication_impl(struct canopen_ctx *ctx);
+static void canopen_start_threads(struct canopen_ctx *ctx);
 
 static void mainline_thread(void *p1, void *p2, void *p3);
 static void sync_thread(void *p1, void *p2, void *p3);
@@ -62,6 +63,7 @@ static void wakeup_sync(void *object);
 
 static int od_new_init();
 static int init();
+static int thread_init();
 
 /* exported variable ---------------------------------------------------------*/
 CO_t *CO = NULL;
@@ -90,6 +92,9 @@ K_THREAD_STACK_DEFINE(sync_thread_stack, CONFIG_CANOPENNODE_SYNC_THREAD_STACK_SI
 // is can be accessed even before canopen is initialized.
 SYS_INIT(od_new_init, POST_KERNEL, 99);
 SYS_INIT(init, APPLICATION, CONFIG_CANOPENNODE_INIT_PRIORITY);
+
+// Start thread in the last step of initialization similar to static threads.
+SYS_INIT(thread_init, APPLICATION, 99);
 
 /* function definition -------------------------------------------------------*/
 int canopen_reset_communication()
@@ -156,7 +161,7 @@ static int canopen_init(struct canopen_ctx *ctx)
 	return 0;
 }
 
-static int canopen_reset_communication_impl(struct canopen_ctx *co)
+static int canopen_reset_communication_impl(struct canopen_ctx *ctx)
 {
 	int err;
 	uint32_t error_info;
@@ -170,7 +175,10 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 	uint32_t serial_number;
 #endif
 
-	if (co->mainline_tid != NULL) {
+	bool thread_started = false;
+	if (ctx->mainline_tid != NULL) {
+		thread_started = true;
+
 		/*
 		 * Lock all mutecies before aborting threads to ensure they are not
 		 * locked when aborted, with limited timeout to avoid deadlock.
@@ -188,10 +196,10 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 			}
 		}
 
-		k_thread_abort(co->mainline_tid);
-		k_thread_abort(co->sync_tid);
-		co->mainline_tid = NULL;
-		co->sync_tid = NULL;
+		k_thread_abort(ctx->mainline_tid);
+		k_thread_abort(ctx->sync_tid);
+		ctx->mainline_tid = NULL;
+		ctx->sync_tid = NULL;
 
 		k_mutex_unlock(&CO->CANmodule->can_send_mutex);
 		k_mutex_unlock(&CO->CANmodule->od_mutex);
@@ -199,7 +207,7 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 	}
 
 	CO_CANmodule_disable(CO->CANmodule);
-	err = CO_CANinit(CO, (void *)can_dev, co->bitrate);
+	err = CO_CANinit(CO, (void *)can_dev, ctx->bitrate);
 	if (err != CO_ERROR_NO) {
 		LOG_ERR("CO_CANinit failed (err %d)", err);
 		return -EIO;
@@ -225,13 +233,13 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 			},
 	};
 
-	err = CO_LSSinit(CO, &lssAddress, &co->node_id, &co->bitrate);
+	err = CO_LSSinit(CO, &lssAddress, &ctx->node_id, &ctx->bitrate);
 	if (err != CO_ERROR_NO) {
 		LOG_ERR("CO_LSSinit failed (err %d)", err);
 		return -EIO;
 	}
 
-	CO_LSSslave_initCallbackPre(CO->LSSslave, co, wakeup_mainline);
+	CO_LSSslave_initCallbackPre(CO->LSSslave, ctx, wakeup_mainline);
 #endif /* CONFIG_CANOPENNODE_LSS_SLAVE */
 
 	if ((first_hb_time = OD_find(OD, OD_H1017_PRODUCER_HB_TIME)) == NULL ||
@@ -243,7 +251,7 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 	err = CO_CANopenInit(
 		CO, NULL, NULL, OD, NULL, NMT_CONTROL, first_hb_time_ms,
 		CONFIG_CANOPENNODE_SDO_TIMEOUT_TIME, CONFIG_CANOPENNODE_SDO_TIMEOUT_TIME,
-		IS_ENABLED(CONFIG_CANOPENNODE_SDO_CLI_BLOCK), co->node_id, &error_info);
+		IS_ENABLED(CONFIG_CANOPENNODE_SDO_CLI_BLOCK), ctx->node_id, &error_info);
 	if (err == CO_ERROR_OD_PARAMETERS) {
 		LOG_ERR("object dictionary error at entry 0x%X", error_info);
 		return -EINVAL;
@@ -254,24 +262,24 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 	}
 
 	/* TIME callbackPre is processed separatedly in canopennode_time.c */
-	CO_EM_initCallbackPre(CO->em, co, wakeup_mainline);
-	CO_NMT_initCallbackPre(CO->NMT, co, wakeup_mainline);
+	CO_EM_initCallbackPre(CO->em, ctx, wakeup_mainline);
+	CO_NMT_initCallbackPre(CO->NMT, ctx, wakeup_mainline);
 #ifndef CONFIG_CANOPENNODE_HB_CONS_DISABLED
-	CO_HBconsumer_initCallbackPre(CO->HBcons, co, wakeup_mainline);
+	CO_HBconsumer_initCallbackPre(CO->HBcons, ctx, wakeup_mainline);
 #endif
 	for (int i = 0; i < OD_CNT_SDO_SRV; i++) {
-		CO_SDOserver_initCallbackPre(&CO->SDOserver[i], co, wakeup_mainline);
+		CO_SDOserver_initCallbackPre(&CO->SDOserver[i], ctx, wakeup_mainline);
 	}
 #ifdef CONFIG_CANOPENNODE_SDO_CLI
 	for (int i = 0; i < OD_CNT_SDO_CLI; i++) {
-		CO_SDOclient_initCallbackPre(&CO->SDOclient[i], co, wakeup_mainline);
+		CO_SDOclient_initCallbackPre(&CO->SDOclient[i], ctx, wakeup_mainline);
 	}
 #endif
 #ifndef CONFIG_CANOPENNODE_SYNC_DISABLED
-	CO_SYNC_initCallbackPre(CO->SYNC, co, wakeup_sync);
+	CO_SYNC_initCallbackPre(CO->SYNC, ctx, wakeup_sync);
 #endif
 
-	err = CO_CANopenInitPDO(CO, CO->em, OD, co->node_id, &error_info);
+	err = CO_CANopenInitPDO(CO, CO->em, OD, ctx->node_id, &error_info);
 	if (err == CO_ERROR_OD_PARAMETERS) {
 		LOG_ERR("object dictionary error at entry 0x%X", error_info);
 		return -EINVAL;
@@ -280,26 +288,30 @@ static int canopen_reset_communication_impl(struct canopen_ctx *co)
 		return -EIO;
 	}
 
-	CO_RPDO_initCallbackPre(CO->RPDO, co, wakeup_sync);
+	CO_RPDO_initCallbackPre(CO->RPDO, ctx, wakeup_sync);
 
 	CO_CANsetNormalMode(CO->CANmodule);
 
-	/* do not start the threads immediately so that the startup process can
-	resume without intrusion */
-	co->mainline_tid =
-		k_thread_create(&co->mainline_thread, mainline_thread_stack,
-				K_THREAD_STACK_SIZEOF(mainline_thread_stack), mainline_thread, NULL,
-				NULL, NULL, CONFIG_CANOPENNODE_MAINLINE_THREAD_PRIORITY, 0,
-				K_USEC(CONFIG_CANOPENNODE_MAINLINE_THREAD_PERIOD));
-	k_thread_name_set(co->mainline_tid, "canopen_mainline");
-
-	co->sync_tid = k_thread_create(&co->sync_thread, sync_thread_stack,
-				       K_THREAD_STACK_SIZEOF(sync_thread_stack), sync_thread, NULL,
-				       NULL, NULL, CONFIG_CANOPENNODE_SYNC_THREAD_PRIORITY, 0,
-				       K_USEC(CONFIG_CANOPENNODE_SYNC_THREAD_PERIOD));
-	k_thread_name_set(co->sync_tid, "canopen_sync");
+	if (thread_started) {
+		canopen_start_threads(ctx);
+	}
 
 	return 0;
+}
+
+static void canopen_start_threads(struct canopen_ctx *ctx)
+{
+	ctx->mainline_tid = k_thread_create(
+		&ctx->mainline_thread, mainline_thread_stack,
+		K_THREAD_STACK_SIZEOF(mainline_thread_stack), mainline_thread, NULL, NULL, NULL,
+		CONFIG_CANOPENNODE_MAINLINE_THREAD_PRIORITY, 0, K_NO_WAIT);
+	k_thread_name_set(ctx->mainline_tid, "canopen_mainline");
+
+	ctx->sync_tid =
+		k_thread_create(&ctx->sync_thread, sync_thread_stack,
+				K_THREAD_STACK_SIZEOF(sync_thread_stack), sync_thread, NULL, NULL,
+				NULL, CONFIG_CANOPENNODE_SYNC_THREAD_PRIORITY, 0, K_NO_WAIT);
+	k_thread_name_set(ctx->sync_tid, "canopen_sync");
 }
 
 static void mainline_thread(void *p1, void *p2, void *p3)
@@ -398,19 +410,19 @@ static void sync_thread(void *p1, void *p2, void *p3)
 
 static void wakeup_mainline(void *object)
 {
-	struct canopen_ctx *co = object;
+	struct canopen_ctx *ctx = object;
 
-	if (co->mainline_tid != NULL) {
-		k_wakeup(co->mainline_tid);
+	if (ctx->mainline_tid != NULL) {
+		k_wakeup(ctx->mainline_tid);
 	}
 }
 
 static void wakeup_sync(void *object)
 {
-	struct canopen_ctx *co = object;
+	struct canopen_ctx *ctx = object;
 
-	if (co->sync_tid != NULL) {
-		k_wakeup(co->sync_tid);
+	if (ctx->sync_tid != NULL) {
+		k_wakeup(ctx->sync_tid);
 	}
 }
 
@@ -423,4 +435,11 @@ static int od_new_init()
 static int init()
 {
 	return canopen_init(&g_ctx);
+}
+
+static int thread_init()
+{
+	canopen_start_threads(&g_ctx);
+
+	return 0;
 }
