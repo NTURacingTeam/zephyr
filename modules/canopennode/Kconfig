@@ -12,6 +12,7 @@ menuconfig CANOPENNODE
 	depends on CAN && !CAN_FD_MODE
 	depends on $(dt_chosen_enabled,$(DT_CHOSEN_ZEPHYR_CANBUS))
 	select CRC
+	select REBOOT
 	help
 	  Enables CANopenNode stack for CANopen protocol support.
 
