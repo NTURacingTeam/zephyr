@@ -7,6 +7,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(net_gptp, CONFIG_NET_GPTP_LOG_LEVEL);
 
+#include <zephyr/net/net_log.h>
 #include <zephyr/net/net_pkt.h>
 #include <zephyr/drivers/ptp_clock.h>
 #include <zephyr/net/ethernet_mgmt.h>
@@ -85,7 +86,7 @@ static void gptp_compute_clock_identity(int port)
 
 #define PRINT_INFO(msg, hdr, pkt)				\
 	NET_DBG("Received %s seq %d pkt %p", (const char *)msg,	\
-		ntohs(hdr->sequence_id), pkt)			\
+		net_ntohs(hdr->sequence_id), pkt)			\
 
 
 static bool gptp_handle_critical_msg(struct net_if *iface, struct net_pkt *pkt)
@@ -130,6 +131,11 @@ static bool gptp_handle_critical_msg(struct net_if *iface, struct net_pkt *pkt)
 
 static void gptp_handle_msg(struct net_pkt *pkt)
 {
+	if (GPTP_PACKET_LEN(pkt) < sizeof(struct gptp_hdr)) {
+		NET_DBG("gPTP packet too short (%zu)", GPTP_PACKET_LEN(pkt));
+		return;
+	}
+
 	struct gptp_hdr *hdr = GPTP_HDR(pkt);
 	struct gptp_pdelay_req_state *pdelay_req_state;
 	struct gptp_sync_rcv_state *sync_rcv_state;
@@ -237,7 +243,7 @@ static void gptp_handle_msg(struct net_pkt *pkt)
 		/* Keep the pkt alive until info is extracted. */
 		sync_rcv_state->rcvd_follow_up_ptr = net_pkt_ref(pkt);
 		NET_DBG("Keeping %s seq %d pkt %p", "FOLLOWUP",
-			ntohs(hdr->sequence_id), pkt);
+			net_ntohs(hdr->sequence_id), pkt);
 		break;
 
 	case GPTP_PATH_DELAY_FOLLOWUP_MESSAGE:

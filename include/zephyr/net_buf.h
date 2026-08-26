@@ -916,7 +916,10 @@ static inline uint8_t *net_buf_simple_tail(const struct net_buf_simple *buf)
  *
  * @return Number of bytes available in the beginning of the buffer.
  */
-size_t net_buf_simple_headroom(const struct net_buf_simple *buf);
+static inline size_t net_buf_simple_headroom(const struct net_buf_simple *buf)
+{
+	return buf->data - buf->__buf;
+}
 
 /**
  * @brief Check buffer tailroom.
@@ -927,7 +930,10 @@ size_t net_buf_simple_headroom(const struct net_buf_simple *buf);
  *
  * @return Number of bytes available at the end of the buffer.
  */
-size_t net_buf_simple_tailroom(const struct net_buf_simple *buf);
+static inline size_t net_buf_simple_tailroom(const struct net_buf_simple *buf)
+{
+	return buf->size - net_buf_simple_headroom(buf) - buf->len;
+}
 
 /**
  * @brief Check maximum net_buf_simple::len value.
@@ -938,7 +944,10 @@ size_t net_buf_simple_tailroom(const struct net_buf_simple *buf);
  *
  * @return Number of bytes usable behind the net_buf_simple::data pointer.
  */
-uint16_t net_buf_simple_max_len(const struct net_buf_simple *buf);
+static inline uint16_t net_buf_simple_max_len(const struct net_buf_simple *buf)
+{
+	return buf->size - net_buf_simple_headroom(buf);
+}
 
 /**
  * @brief Parsing state of a buffer.
@@ -1010,17 +1019,80 @@ struct net_buf {
 	/** Fragments associated with this buffer. */
 	struct net_buf *frags;
 
-	/** Reference count. */
-	uint8_t ref;
+	/** Reference count, packed alongside three adjacent uint8_t
+	 *  fields (`flags`, `pool_id`, `user_data_size`) in a single
+	 *  atomic_t-sized slot.
+	 *
+	 * `ref_word` is the atomic_t view used by net_buf internals for
+	 * ref/unref; `ref`, `flags`, `pool_id` and `user_data_size` are
+	 * byte-level views into the same storage.
+	 *
+	 * atomic_inc/dec on ref_word add/subtract 1 to/from the whole
+	 * word, but because the byte-struct layout below places `ref`
+	 * at the least-significant byte of `ref_word` regardless of
+	 * endianness, and because the ref count never overflows past
+	 * 254 (already implicit in its uint8_t domain), only the ref
+	 * byte changes -- the other three bytes are untouched.
+	 *
+	 * On 32-bit architectures atomic_t is 4 bytes and the byte
+	 * struct fills the slot exactly. On 64-bit, atomic_t is 8 bytes;
+	 * the upper 4 bytes are alignment padding that struct net_buf
+	 * already required (the next field is an 8-byte-aligned
+	 * pointer), so this union does not grow struct net_buf there
+	 * either. On big-endian 64-bit, the byte struct is shifted by
+	 * 4 bytes of explicit padding so `ref` still sits at the LSB of
+	 * ref_word.
+	 *
+	 * `flags`, `pool_id` and `user_data_size` are written exactly
+	 * once at allocation time on a single thread and are read-only
+	 * thereafter, so plain uint8_t reads from non-atomic call sites
+	 * remain safe. `flags` is also legally written from a context
+	 * that owns the buf exclusively (e.g. bt_buf_make_view on a
+	 * just-allocated view).
+	 */
+	union {
+		/** @cond INTERNAL_HIDDEN */
+		atomic_t ref_word;
+		/** @endcond */
+		struct {
+#if defined(CONFIG_BIG_ENDIAN)
+			/* atomic_t is typedef'd as long (BUILD_ASSERTed in
+			 * lib/net_buf/buf.c); on a 64-bit big-endian build
+			 * the byte struct needs 4 bytes of padding so that
+			 * `ref` lands on the least-significant byte of
+			 * ref_word.
+			 */
+#if (__SIZEOF_LONG__ == 8)
+			/** @cond INTERNAL_HIDDEN */
+			uint8_t _ref_word_pad[4];
+			/** @endcond */
+#endif
+			/** Size of user data on this buffer */
+			uint8_t user_data_size;
 
-	/** Bit-field of buffer flags. */
-	uint8_t flags;
+			/** Where the buffer should go when freed up. */
+			uint8_t pool_id;
 
-	/** Where the buffer should go when freed up. */
-	uint8_t pool_id;
+			/** Bit-field of buffer flags. */
+			uint8_t flags;
 
-	/** Size of user data on this buffer */
-	uint8_t user_data_size;
+			/** Reference count. */
+			uint8_t ref;
+#else
+			/** Reference count. */
+			uint8_t ref;
+
+			/** Bit-field of buffer flags. */
+			uint8_t flags;
+
+			/** Where the buffer should go when freed up. */
+			uint8_t pool_id;
+
+			/** Size of user data on this buffer */
+			uint8_t user_data_size;
+#endif
+		};
+	};
 
 	/** Union for convenience access to the net_buf_simple members, also
 	 * preserving the old API.
@@ -1066,6 +1138,7 @@ struct net_buf_data_alloc {
 	const struct net_buf_data_cb *cb;
 	void *alloc_data;
 	size_t max_alloc_size;
+	size_t alignment;
 };
 
 /** @endcond */
@@ -1281,6 +1354,51 @@ extern const struct net_buf_data_cb net_buf_var_cb;
 
 /**
  *
+ * @brief Define a new pool for buffers with variable size payloads. Align the
+ *        length and start of the buffer to the specified alignment.
+ *
+ * Defines a net_buf_pool struct and the necessary memory storage (array of
+ * structs) for the needed amount of buffers. After this, the buffers can be
+ * accessed from the pool through net_buf_alloc. The pool is defined as a
+ * static variable, so if it needs to be exported outside the current module
+ * this needs to happen with the help of a separate pointer rather than an
+ * extern declaration.
+ *
+ * The data payload of the buffers will be based on a memory pool from which
+ * variable size payloads may be allocated.
+ *
+ * If provided with a custom destroy callback, this callback is
+ * responsible for eventually calling net_buf_destroy() to complete the
+ * process of returning the buffer to the pool.
+ *
+ * Both the length and start of the buffer will be aligned to the specified
+ * alignment. The alignment must be a power of 2 and the size of the
+ * alignment must be less than or equal to the size of the data payload.
+ *
+ * @param _name      Name of the pool variable.
+ * @param _count     Number of buffers in the pool.
+ * @param _data_size Total amount of memory available for data payloads.
+ * @param _ud_size   User data space to reserve per buffer.
+ * @param _destroy   Optional destroy callback when buffer is freed.
+ * @param _align     Alignment of the length and start of the buffer.
+ */
+#define NET_BUF_POOL_VAR_ALIGN_DEFINE(_name, _count, _data_size, _ud_size,     \
+				      _destroy, _align)			       \
+	_NET_BUF_ARRAY_DEFINE(_name, _count, _ud_size);                        \
+	K_HEAP_DEFINE(net_buf_mem_pool_##_name, _data_size);                   \
+	static const struct net_buf_data_alloc net_buf_data_alloc_##_name = {  \
+		.cb = &net_buf_var_cb,					       \
+		.alloc_data = &net_buf_mem_pool_##_name,                       \
+		.max_alloc_size = 0,                                           \
+		.alignment = _align,					       \
+	};                                                                     \
+	static STRUCT_SECTION_ITERABLE(net_buf_pool, _name) =                  \
+		NET_BUF_POOL_INITIALIZER(_name, &net_buf_data_alloc_##_name,   \
+					 _net_buf_##_name, _count, _ud_size,   \
+					 _destroy)
+
+/**
+ *
  * @brief Define a new pool for buffers
  *
  * Defines a net_buf_pool struct and the necessary memory storage (array of
@@ -1325,6 +1443,40 @@ struct net_buf_pool *net_buf_pool_get(int id);
  * @return Zero-based index for the buffer.
  */
 int net_buf_id(const struct net_buf *buf);
+
+#if defined(CONFIG_NET_BUF_POOL_USAGE) || defined(__DOXYGEN__)
+/**
+ * @brief Get the number of buffers currently available to claim from a pool.
+ *
+ * Note that the number of available buffers might already have changed by the time this
+ * function returns if other threads are also allocating or freeing buffers from the
+ * pool.
+ *
+ * @kconfig_dep{CONFIG_NET_BUF_POOL_USAGE}
+ *
+ * @param pool Which pool to check
+ *
+ * @return Number of buffers currently available in the pool
+ */
+static inline size_t net_buf_get_available(struct net_buf_pool *pool)
+{
+	return (size_t)atomic_get(&pool->avail_count);
+}
+
+/**
+ * @brief Get the maximum number of buffers simultaneously claimed from a pool.
+ *
+ * @kconfig_dep{CONFIG_NET_BUF_POOL_USAGE}
+ *
+ * @param pool Which pool to check
+ *
+ * @return Maximum number of buffers simultaneously claimed from the pool
+ */
+static inline size_t net_buf_get_max_used(struct net_buf_pool *pool)
+{
+	return (size_t)pool->max_used;
+}
+#endif /* defined(CONFIG_NET_BUF_POOL_USAGE) || defined(__DOXYGEN__) */
 
 /**
  * @brief Allocate a new fixed buffer from a pool.

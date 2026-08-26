@@ -20,6 +20,7 @@ LOG_MODULE_REGISTER(net_ieee802154, CONFIG_NET_L2_IEEE802154_LOG_LEVEL);
 #include <zephyr/net/capture.h>
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/net_core.h>
+#include <zephyr/net/net_log.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_l2.h>
 #include <zephyr/net/net_linkaddr.h>
@@ -81,7 +82,7 @@ static inline void ieee802154_acknowledge(struct net_if *iface, struct ieee80215
 		return;
 	}
 
-	pkt = net_pkt_alloc_with_buffer(iface, IEEE802154_ACK_PKT_LENGTH, AF_UNSPEC, 0,
+	pkt = net_pkt_alloc_with_buffer(iface, IEEE802154_ACK_PKT_LENGTH, NET_AF_UNSPEC, 0,
 					BUF_TIMEOUT);
 	if (!pkt) {
 		return;
@@ -476,24 +477,47 @@ static enum net_verdict ieee802154_recv(struct net_if *iface, struct net_pkt *pk
 /**
  * Implements (part of) the MCPS-DATA.request/confirm primitives, see sections 8.3.2/3.
  */
+static int copy_pkt_to_frame(struct net_buf *frame_buf, const struct net_buf *pkt_buf,
+			     size_t pkt_len, uint8_t authtag_len)
+{
+	size_t tailroom = net_buf_tailroom(frame_buf);
+	size_t copied;
+
+	if (authtag_len > tailroom || pkt_len > tailroom - authtag_len) {
+		return -EMSGSIZE;
+	}
+
+	copied = net_buf_linearize(net_buf_tail(frame_buf), tailroom - authtag_len, pkt_buf, 0,
+				   pkt_len);
+	if (copied != pkt_len) {
+		NET_ERR("Failed to copy packet to frame (%zu/%zu)", copied, pkt_len);
+		return -EINVAL;
+	}
+
+	net_buf_add(frame_buf, copied);
+
+	return 0;
+}
+
 static int ieee802154_send(struct net_if *iface, struct net_pkt *pkt)
 {
 	struct ieee802154_context *ctx = net_if_l2_data(iface);
+	struct net_buf *pkt_buf;
 	uint8_t ll_hdr_len = 0, authtag_len = 0;
 	static struct net_buf *frame_buf;
-	static struct net_buf *pkt_buf;
+	size_t pkt_len;
 	bool send_raw = false;
+	bool requires_fragmentation = false;
 	int len;
 #ifdef CONFIG_NET_L2_IEEE802154_FRAGMENT
 	struct ieee802154_6lo_fragment_ctx frag_ctx;
-	int requires_fragmentation = 0;
 #endif
 
 	if (frame_buf == NULL) {
 		frame_buf = net_buf_alloc(&tx_frame_buf_pool, K_FOREVER);
 	}
 
-	if (IS_ENABLED(CONFIG_NET_SOCKETS_PACKET) && net_pkt_family(pkt) == AF_PACKET) {
+	if (IS_ENABLED(CONFIG_NET_SOCKETS_PACKET) && net_pkt_family(pkt) == NET_AF_PACKET) {
 		enum net_sock_type socket_type;
 		struct net_context *context;
 
@@ -503,21 +527,31 @@ static int ieee802154_send(struct net_if *iface, struct net_pkt *pkt)
 		}
 
 		socket_type = net_context_get_type(context);
-		if (socket_type == SOCK_RAW) {
+		if (socket_type == NET_SOCK_RAW) {
 			send_raw = true;
 		} else if (IS_ENABLED(CONFIG_NET_SOCKETS_PACKET_DGRAM) &&
-			   socket_type == SOCK_DGRAM) {
-			struct sockaddr_ll *dst_addr = (struct sockaddr_ll *)&context->remote;
-			struct sockaddr_ll_ptr *src_addr =
-				(struct sockaddr_ll_ptr *)&context->local;
+			   socket_type == NET_SOCK_DGRAM) {
+			struct net_sockaddr_ll *dst_addr =
+				(struct net_sockaddr_ll *)&context->remote;
 
 			(void)net_linkaddr_set(net_pkt_lladdr_dst(pkt),
 					       dst_addr->sll_addr,
 					       dst_addr->sll_halen);
 
+			/* context->local sockaddr_ll_ptr is not supported for
+			 * NET_AF_PACKET sockets (raw packets from l2).
+			 *
+			 * Although the sll_addr pointer correctly links to the iface
+			 * net_linkaddr, the sll_halen is a copy and doesn't track properly
+			 * the iface linkaddr len. For example, the linkaddr len can change
+			 * depending on the link address format with 802.15.4, between
+			 * extended (8 bytes) or short (2 bytes).
+			 *
+			 * Instead, use the iface link_addr directly.
+			 */
 			(void)net_linkaddr_set(net_pkt_lladdr_src(pkt),
-					       src_addr->sll_addr,
-					       src_addr->sll_halen);
+					       iface->if_dev->link_addr.addr,
+					       iface->if_dev->link_addr.len);
 		} else {
 			return -EINVAL;
 		}
@@ -530,15 +564,24 @@ static int ieee802154_send(struct net_if *iface, struct net_pkt *pkt)
 
 #ifdef CONFIG_NET_6LO
 #ifdef CONFIG_NET_L2_IEEE802154_FRAGMENT
-		requires_fragmentation =
-			ieee802154_6lo_encode_pkt(iface, pkt, &frag_ctx, ll_hdr_len, authtag_len);
-		if (requires_fragmentation < 0) {
-			return requires_fragmentation;
+		int ret;
+
+		ret = ieee802154_6lo_encode_pkt(iface, pkt, &frag_ctx, ll_hdr_len, authtag_len);
+		if (ret < 0) {
+			return ret;
 		}
+
+		requires_fragmentation = (ret != 0);
 #else
 		ieee802154_6lo_encode_pkt(iface, pkt, NULL, ll_hdr_len, authtag_len);
 #endif /* CONFIG_NET_L2_IEEE802154_FRAGMENT */
 #endif /* CONFIG_NET_6LO */
+	}
+
+	pkt_len = net_pkt_get_len(pkt);
+	if (!requires_fragmentation && ll_hdr_len + pkt_len + authtag_len > IEEE802154_MTU) {
+		NET_ERR("Frame too long: %zu", ll_hdr_len + pkt_len + authtag_len);
+		return -EMSGSIZE;
 	}
 
 	net_capture_pkt(iface, pkt);
@@ -556,16 +599,20 @@ static int ieee802154_send(struct net_if *iface, struct net_pkt *pkt)
 		if (requires_fragmentation) {
 			pkt_buf = ieee802154_6lo_fragment(&frag_ctx, frame_buf, true);
 		} else {
-			net_buf_add_mem(frame_buf, pkt_buf->data, pkt_buf->len);
-			pkt_buf = pkt_buf->frags;
+			ret = copy_pkt_to_frame(frame_buf, pkt->buffer, pkt_len, authtag_len);
+			if (ret < 0) {
+				return ret;
+			}
+
+			pkt_buf = NULL;
 		}
 #else
-		if (ll_hdr_len + pkt_buf->len + authtag_len > IEEE802154_MTU) {
-			NET_ERR("Frame too long: %d", pkt_buf->len);
-			return -EINVAL;
+		ret = copy_pkt_to_frame(frame_buf, pkt->buffer, pkt_len, authtag_len);
+		if (ret < 0) {
+			return ret;
 		}
-		net_buf_add_mem(frame_buf, pkt_buf->data, pkt_buf->len);
-		pkt_buf = pkt_buf->frags;
+
+		pkt_buf = NULL;
 #endif /* CONFIG_NET_L2_IEEE802154_FRAGMENT */
 
 		__ASSERT_NO_MSG(authtag_len <= net_buf_tailroom(frame_buf));

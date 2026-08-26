@@ -6,17 +6,18 @@
 
 /**
  * @file
- * @brief Public SMBus Driver APIs
+ * @ingroup smbus_interface
+ * @brief Main header file for SMBus (System Management Bus) driver API.
  */
 
 #ifndef ZEPHYR_INCLUDE_DRIVERS_SMBUS_H_
 #define ZEPHYR_INCLUDE_DRIVERS_SMBUS_H_
 
 /**
- * @brief SMBus Interface
- * @defgroup smbus_interface SMBus Interface
+ * @brief Interfaces for System Management Bus (SMBus).
+ * @defgroup smbus_interface SMBus
  * @since 3.4
- * @version 0.1.0
+ * @version 0.8.0
  * @ingroup io_interfaces
  * @{
  */
@@ -639,11 +640,8 @@ static inline int smbus_smbalert_set_cb(const struct device *dev,
  * @retval -ENOSYS If function smbus_smbalert_remove_cb() is not implemented
  * by the driver.
  */
-__syscall int smbus_smbalert_remove_cb(const struct device *dev,
-				       struct smbus_callback *cb);
-
-static inline int z_impl_smbus_smbalert_remove_cb(const struct device *dev,
-						  struct smbus_callback *cb)
+static inline int smbus_smbalert_remove_cb(const struct device *dev,
+					   struct smbus_callback *cb)
 {
 	const struct smbus_driver_api *api =
 		(const struct smbus_driver_api *)dev->api;
@@ -690,11 +688,8 @@ static inline int smbus_host_notify_set_cb(const struct device *dev,
  * @retval -ENOSYS If function smbus_host_notify_remove_cb() is not implemented
  * by the driver.
  */
-__syscall int smbus_host_notify_remove_cb(const struct device *dev,
-					  struct smbus_callback *cb);
-
-static inline int z_impl_smbus_host_notify_remove_cb(const struct device *dev,
-						     struct smbus_callback *cb)
+static inline int smbus_host_notify_remove_cb(const struct device *dev,
+					      struct smbus_callback *cb)
 {
 	const struct smbus_driver_api *api =
 		(const struct smbus_driver_api *)dev->api;

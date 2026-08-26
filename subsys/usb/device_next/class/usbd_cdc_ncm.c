@@ -571,7 +571,7 @@ static int cdc_ncm_acl_out_cb(struct usbd_class_data *const c_data,
 			break;
 		}
 
-		pkt = net_pkt_rx_alloc_with_buffer(data->iface, len, AF_UNSPEC, 0, K_FOREVER);
+		pkt = net_pkt_rx_alloc_with_buffer(data->iface, len, NET_AF_UNSPEC, 0, K_FOREVER);
 		if (!pkt) {
 			LOG_ERR("No memory for net_pkt");
 			goto unref_packet;
@@ -865,6 +865,7 @@ static void usbd_cdc_ncm_disable(struct usbd_class_data *const c_data)
 	const struct device *dev = usbd_class_get_private(c_data);
 	struct cdc_ncm_eth_data *data = dev->data;
 
+	atomic_clear_bit(&data->state, CDC_NCM_DATA_IFACE_ENABLED);
 	atomic_clear_bit(&data->state, CDC_NCM_CLASS_SUSPENDED);
 
 	LOG_INF("Disabled %s", c_data->name);
@@ -945,9 +946,10 @@ static int usbd_cdc_ncm_cth(struct usbd_class_data *const c_data,
 			.wNdbOutAlignment = sys_cpu_to_le16(CDC_NCM_ALIGNMENT),
 			.wNtbOutMaxDatagrams = sys_cpu_to_le16(CDC_NCM_RECV_MAX_DATAGRAMS_PER_NTB),
 		};
+		const uint16_t len = MIN(sizeof(ntb_params), setup->wLength);
 
 		LOG_DBG("GET_NTB_PARAMETERS");
-		net_buf_add_mem(buf, &ntb_params, sizeof(ntb_params));
+		net_buf_add_mem(buf, &ntb_params, len);
 		break;
 	}
 
@@ -957,9 +959,10 @@ static int usbd_cdc_ncm_cth(struct usbd_class_data *const c_data,
 			.wNtbInMaxDatagrams = sys_cpu_to_le16(CDC_NCM_SEND_MAX_DATAGRAMS_PER_NTB),
 			.wReserved = sys_cpu_to_le16(0),
 		};
+		const uint16_t len = MIN(sizeof(input_size), setup->wLength);
 
 		LOG_DBG("GET_NTB_INPUT_SIZE");
-		net_buf_add_mem(buf, &input_size, sizeof(input_size));
+		net_buf_add_mem(buf, &input_size, len);
 		break;
 	}
 
@@ -988,10 +991,12 @@ static int usbd_cdc_ncm_init(struct usbd_class_data *const c_data)
 
 	LOG_DBG("CDC NCM class initialized");
 
-	if (usbd_add_descriptor(uds_ctx, data->mac_desc_data)) {
-		LOG_ERR("Failed to add iMACAddress string descriptor");
-	} else {
-		desc->if0_ecm.iMACAddress = usbd_str_desc_get_idx(data->mac_desc_data);
+	if (desc->if0_ecm.iMACAddress == 0) {
+		if (usbd_add_descriptor(uds_ctx, data->mac_desc_data)) {
+			LOG_ERR("Failed to add iMACAddress string descriptor");
+		} else {
+			desc->if0_ecm.iMACAddress = usbd_str_desc_get_idx(data->mac_desc_data);
+		}
 	}
 
 	return 0;
@@ -1027,6 +1032,7 @@ static int cdc_ncm_send(const struct device *dev, struct net_pkt *const pkt)
 	size_t len = net_pkt_get_len(pkt);
 	struct net_buf *buf;
 	union send_ntb *ntb;
+	int ret;
 
 	if (len > NET_ETH_MAX_FRAME_SIZE) {
 		LOG_WRN("Trying to send too large packet, drop");
@@ -1082,7 +1088,14 @@ static int cdc_ncm_send(const struct device *dev, struct net_pkt *const pkt)
 		udc_ep_buf_set_zlp(buf);
 	}
 
-	usbd_ep_enqueue(c_data, buf);
+	ret = usbd_ep_enqueue(c_data, buf);
+	if (ret) {
+		LOG_ERR("Failed to enqueue net_buf for 0x%02x",
+			cdc_ncm_get_bulk_in(c_data));
+		net_buf_unref(buf);
+		return ret;
+	}
+
 	k_sem_take(&data->sync_sem, K_FOREVER);
 
 	net_buf_unref(buf);
@@ -1096,21 +1109,24 @@ static int cdc_ncm_set_config(const struct device *dev,
 {
 	struct cdc_ncm_eth_data *data = dev->data;
 
-	if (type == ETHERNET_CONFIG_TYPE_MAC_ADDRESS) {
+	switch (type) {
+	case ETHERNET_CONFIG_TYPE_MAC_ADDRESS:
 		memcpy(data->mac_addr, config->mac_address.addr,
 		       sizeof(data->mac_addr));
-
 		return 0;
+	case ETHERNET_CONFIG_TYPE_PROMISC_MODE:
+		/* nothing to do */
+		return 0;
+	default:
+		return -ENOTSUP;
 	}
-
-	return -ENOTSUP;
 }
 
 static enum ethernet_hw_caps cdc_ncm_get_capabilities(const struct device *dev)
 {
 	ARG_UNUSED(dev);
 
-	return ETHERNET_LINK_10BASE;
+	return ETHERNET_LINK_10BASE | ETHERNET_PROMISC_MODE;
 }
 
 static int cdc_ncm_iface_start(const struct device *dev)
@@ -1242,7 +1258,7 @@ static struct usbd_cdc_ncm_desc cdc_ncm_desc_##n = {				\
 		.bFunctionLength = sizeof(struct cdc_ecm_descriptor),		\
 		.bDescriptorType = USB_DESC_CS_INTERFACE,			\
 		.bDescriptorSubtype = ETHERNET_FUNC_DESC,			\
-		.iMACAddress = 4,						\
+		.iMACAddress = 0,						\
 		.bmEthernetStatistics = sys_cpu_to_le32(0),			\
 		.wMaxSegmentSize = sys_cpu_to_le16(NET_ETH_MAX_FRAME_SIZE),	\
 		.wNumberMCFilters = sys_cpu_to_le16(0),				\

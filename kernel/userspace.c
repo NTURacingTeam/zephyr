@@ -23,6 +23,7 @@
 #include <zephyr/sys/util.h>
 #include <inttypes.h>
 #include <zephyr/linker/linker-defs.h>
+#include <zephyr/cache.h>
 
 #ifdef Z_LIBC_PARTITION_EXISTS
 K_APPMEM_PARTITION_DEFINE(z_libc_partition);
@@ -49,7 +50,6 @@ LOG_MODULE_DECLARE(os, CONFIG_KERNEL_LOG_LEVEL);
  */
 #ifdef CONFIG_DYNAMIC_OBJECTS
 static struct k_spinlock lists_lock;       /* kobj dlist */
-static struct k_spinlock objfree_lock;     /* k_object_free */
 
 #ifdef CONFIG_GEN_PRIV_STACKS
 /* On ARM & ARC MPU & RISC-V PMP we may have two different alignment requirement
@@ -76,9 +76,8 @@ static struct k_spinlock obj_lock;         /* kobj struct data */
 
 #ifdef CONFIG_DYNAMIC_OBJECTS
 extern uint8_t _thread_idx_map[CONFIG_MAX_THREAD_BYTES];
-#endif /* CONFIG_DYNAMIC_OBJECTS */
-
 static void clear_perms_cb(struct k_object *ko, void *ctx_ptr);
+#endif /* CONFIG_DYNAMIC_OBJECTS */
 
 const char *otype_to_str(enum k_objects otype)
 {
@@ -222,28 +221,31 @@ static size_t obj_align_get(enum k_objects otype)
 	return ret;
 }
 
-static struct dyn_obj *dyn_object_find(const void *obj)
+static struct dyn_obj *dyn_object_find_locked(const void *obj)
 {
 	struct dyn_obj *node;
-	k_spinlock_key_t key;
 
 	/* For any dynamically allocated kernel object, the object
 	 * pointer is just a member of the containing struct dyn_obj,
 	 * so just a little arithmetic is necessary to locate the
 	 * corresponding struct rbnode
 	 */
-	key = k_spin_lock(&lists_lock);
-
 	SYS_DLIST_FOR_EACH_CONTAINER(&obj_list, node, dobj_list) {
 		if (node->kobj.name == obj) {
-			goto end;
+			return node;
 		}
 	}
 
-	/* No object found */
-	node = NULL;
+	return NULL;
+}
 
- end:
+static struct dyn_obj *dyn_object_find(const void *obj)
+{
+	struct dyn_obj *node;
+	k_spinlock_key_t key;
+
+	key = k_spin_lock(&lists_lock);
+	node = dyn_object_find_locked(obj);
 	k_spin_unlock(&lists_lock, key);
 
 	return node;
@@ -270,12 +272,17 @@ static bool thread_idx_alloc(uintptr_t *tidx)
 	int i;
 	int idx;
 	int base;
+	bool ret = false;
+	k_spinlock_key_t key;
 
 	base = 0;
+	key = k_spin_lock(&lists_lock);
 	for (i = 0; i < CONFIG_MAX_THREAD_BYTES; i++) {
 		idx = find_lsb_set(_thread_idx_map[i]);
 
 		if (idx != 0) {
+			struct dyn_obj *obj, *next;
+
 			*tidx = base + (idx - 1);
 
 			/* Clear the bit. We already know the array index,
@@ -284,16 +291,22 @@ static bool thread_idx_alloc(uintptr_t *tidx)
 			_thread_idx_map[i] &= ~(BIT(idx - 1));
 
 			/* Clear permission from all objects */
-			k_object_wordlist_foreach(clear_perms_cb,
-						   (void *)*tidx);
 
-			return true;
+			z_object_gperf_wordlist_foreach(clear_perms_cb, (void *)*tidx);
+
+			SYS_DLIST_FOR_EACH_CONTAINER_SAFE(&obj_list, obj, next, dobj_list) {
+				clear_perms_cb(&obj->kobj, (void *)*tidx);
+			}
+
+			ret = true;
+			break;
 		}
 
 		base += 8;
 	}
 
-	return false;
+	k_spin_unlock(&lists_lock, key);
+	return ret;
 }
 
 /**
@@ -308,14 +321,26 @@ static bool thread_idx_alloc(uintptr_t *tidx)
  **/
 static void thread_idx_free(uintptr_t tidx)
 {
-	/* To prevent leaked permission when index is recycled */
-	k_object_wordlist_foreach(clear_perms_cb, (void *)tidx);
+	struct dyn_obj *obj, *next;
+
+	z_object_gperf_wordlist_foreach(clear_perms_cb, (void *)tidx);
+
+	/* Hold lists_lock so two concurrent k_object_free() calls on thread indices
+	 * within the same byte cannot lose a bit in the non-atomic |=.
+	 */
+	k_spinlock_key_t key = k_spin_lock(&lists_lock);
+
+	SYS_DLIST_FOR_EACH_CONTAINER_SAFE(&obj_list, obj, next, dobj_list) {
+		clear_perms_cb(&obj->kobj, (void *)tidx);
+	}
 
 	/* Figure out which bits to set in _thread_idx_map[] and set it. */
 	int base = tidx / NUM_BITS(_thread_idx_map[0]);
 	int offset = tidx % NUM_BITS(_thread_idx_map[0]);
 
 	_thread_idx_map[base] |= BIT(offset);
+
+	k_spin_unlock(&lists_lock, key);
 }
 
 static struct k_object *dynamic_object_create(enum k_objects otype, size_t align,
@@ -344,19 +369,31 @@ static struct k_object *dynamic_object_create(enum k_objects otype, size_t align
 			return NULL;
 		}
 
+#ifdef CONFIG_DYNAMIC_OBJECTS_FORCE_STACK_CACHED
+		/* With kernel coherence enabled, it is possible that the stack
+		 * has been allocated on uncached area. This has an implications on
+		 * performance as memory access is not cached.
+		 * This simply nudges the indicated stack pointer to be inside
+		 * cached area such that the thread object will have its stack
+		 * inside cached area.
+		 */
+		if (sys_cache_is_ptr_uncached(dyn->data)) {
+			dyn->data = sys_cache_cached_ptr_get(dyn->data);
+		}
+#endif /* CONFIG_DYNAMIC_OBJECTS_FORCE_STACK_CACHED */
+
 #ifdef CONFIG_GEN_PRIV_STACKS
 		struct z_stack_data *stack_data = (struct z_stack_data *)
 			((uint8_t *)dyn->data + adjusted_size - sizeof(*stack_data));
-		stack_data->priv = (uint8_t *)dyn->data;
-		stack_data->size = adjusted_size;
-		dyn->kobj.data.stack_data = stack_data;
 #if defined(CONFIG_ARM_MPU) || defined(CONFIG_ARC_MPU) || defined(CONFIG_RISCV_PMP)
-		dyn->kobj.name = (void *)ROUND_UP(
-			  ((uint8_t *)dyn->data + CONFIG_PRIVILEGED_STACK_SIZE),
+		stack_data->priv = (void *)ROUND_UP(((uint8_t *)dyn->data + size),
 			  Z_THREAD_STACK_OBJ_ALIGN(size));
 #else
-		dyn->kobj.name = dyn->data;
+		stack_data->priv = (uint8_t *)dyn->data;
 #endif /* CONFIG_ARM_MPU || CONFIG_ARC_MPU || CONFIG_RISCV_PMP */
+		stack_data->size = adjusted_size;
+		dyn->kobj.data.stack_data = stack_data;
+		dyn->kobj.name = dyn->data;
 #else
 		dyn->kobj.name = dyn->data;
 		dyn->kobj.data.stack_size = adjusted_size;
@@ -459,27 +496,63 @@ void *z_impl_k_object_alloc_size(enum k_objects otype, size_t size)
 
 void k_object_free(void *obj)
 {
-	struct dyn_obj *dyn;
+	struct dyn_obj *dyn = NULL;
+	bool free_thread_idx = false;
+	uintptr_t thread_idx = 0;
 
 	/* This function is intentionally not exposed to user mode.
 	 * There's currently no robust way to track that an object isn't
 	 * being used by some other thread
 	 */
 
-	k_spinlock_key_t key = k_spin_lock(&objfree_lock);
+	/* Hold lists_lock so a concurrent k_object_wordlist_foreach() on
+	 * another CPU cannot save a pointer to a node that we are
+	 * about to unlink and free.
+	 */
+	k_spinlock_key_t key = k_spin_lock(&lists_lock);
 
-	dyn = dyn_object_find(obj);
+	dyn = dyn_object_find_locked(obj);
+
 	if (dyn != NULL) {
 		sys_dlist_remove(&dyn->dobj_list);
 
 		if (dyn->kobj.type == K_OBJ_THREAD) {
-			thread_idx_free(dyn->kobj.data.thread_id);
+			free_thread_idx = true;
+			thread_idx = dyn->kobj.data.thread_id;
 		}
 	}
-	k_spin_unlock(&objfree_lock, key);
+	k_spin_unlock(&lists_lock, key);
+
+	/* thread_idx_free() acquires lists_lock itself to serialize the
+	 * non-atomic bitmap update against concurrent frees, so it must
+	 * run with the lock dropped here.
+	 */
+	if (free_thread_idx) {
+		thread_idx_free(thread_idx);
+	}
 
 	if (dyn != NULL) {
-		k_free(dyn->data);
+#ifdef CONFIG_DYNAMIC_OBJECTS_FORCE_STACK_CACHED
+		/* We may have nudged the pointer to point to the cached area
+		 * in dynamic_object_create() when we first created the thread
+		 * stack object. So we need to restore the uncached one before
+		 * freeing it.
+		 */
+		if (dyn->kobj.type == K_OBJ_THREAD_STACK_ELEMENT) {
+			uint8_t *stack;
+
+			if (sys_cache_is_ptr_cached(dyn->data)) {
+				stack = sys_cache_uncached_ptr_get(dyn->data);
+			} else {
+				stack = dyn->data;
+			}
+
+			k_free(stack);
+		} else
+#endif /* CONFIG_DYNAMIC_OBJECTS_FORCE_STACK_CACHED */
+		{
+			k_free(dyn->data);
+		}
 		k_free(dyn);
 	}
 }
@@ -561,7 +634,11 @@ static unsigned int thread_index_get(struct k_thread *thread)
 	return ko->data.thread_id;
 }
 
-static void unref_check(struct k_object *ko, uintptr_t index)
+/* Caller must hold lists_lock for the duration of this call so that the
+ * sys_dlist_remove() below is mutually exclusive with concurrent
+ * obj_list traversal in k_object_wordlist_foreach() on another CPU.
+ */
+static void unref_check(struct k_object *ko, uintptr_t index, bool sched_locked)
 {
 	k_spinlock_key_t key = k_spin_lock(&obj_lock);
 
@@ -589,18 +666,24 @@ static void unref_check(struct k_object *ko, uintptr_t index)
 	 * dynamically allocated resources, require cleanup, or need to be
 	 * marked as uninitialized when all references are gone. What
 	 * specifically needs to happen depends on the object type.
+	 *
+	 * When sched_locked, we use k_free_sched_locked() variants to
+	 * avoid recursive locking of _sched_spinlock (see k_heap_free).
 	 */
 	switch (ko->type) {
-#ifdef CONFIG_PIPES
-	case K_OBJ_PIPE:
-		k_pipe_cleanup((struct k_pipe *)ko->name);
-		break;
-#endif /* CONFIG_PIPES */
 	case K_OBJ_MSGQ:
-		k_msgq_cleanup((struct k_msgq *)ko->name);
+		if (sched_locked) {
+			z_msgq_cleanup_sched_locked((struct k_msgq *)ko->name);
+		} else {
+			k_msgq_cleanup((struct k_msgq *)ko->name);
+		}
 		break;
 	case K_OBJ_STACK:
-		k_stack_cleanup((struct k_stack *)ko->name);
+		if (sched_locked) {
+			z_stack_cleanup_sched_locked((struct k_stack *)ko->name);
+		} else {
+			k_stack_cleanup((struct k_stack *)ko->name);
+		}
 		break;
 	default:
 		/* Nothing to do */
@@ -608,8 +691,13 @@ static void unref_check(struct k_object *ko, uintptr_t index)
 	}
 
 	sys_dlist_remove(&dyn->dobj_list);
-	k_free(dyn->data);
-	k_free(dyn);
+	if (sched_locked) {
+		k_free_sched_locked(dyn->data);
+		k_free_sched_locked(dyn);
+	} else {
+		k_free(dyn->data);
+		k_free(dyn);
+	}
 out:
 #endif /* CONFIG_DYNAMIC_OBJECTS */
 	k_spin_unlock(&obj_lock, key);
@@ -653,15 +741,34 @@ void k_thread_perms_clear(struct k_object *ko, struct k_thread *thread)
 
 	if (index != -1) {
 		sys_bitfield_clear_bit((mem_addr_t)&ko->perms, index);
-		unref_check(ko, index);
+		/* unref_check() requires lists_lock so its dlist remove is
+		 * SMP-safe.
+		 */
+#ifdef CONFIG_DYNAMIC_OBJECTS
+		k_spinlock_key_t key = k_spin_lock(&lists_lock);
+
+		unref_check(ko, index, false);
+		k_spin_unlock(&lists_lock, key);
+#else
+		unref_check(ko, index, false);
+#endif /* CONFIG_DYNAMIC_OBJECTS */
 	}
 }
 
+#ifdef CONFIG_DYNAMIC_OBJECTS
 static void clear_perms_cb(struct k_object *ko, void *ctx_ptr)
 {
 	uintptr_t id = (uintptr_t)ctx_ptr;
 
-	unref_check(ko, id);
+	unref_check(ko, id, false);
+}
+#endif
+
+static void clear_perms_sched_locked_cb(struct k_object *ko, void *ctx_ptr)
+{
+	uintptr_t id = (uintptr_t)ctx_ptr;
+
+	unref_check(ko, id, true);
 }
 
 void k_thread_perms_all_clear(struct k_thread *thread)
@@ -669,7 +776,8 @@ void k_thread_perms_all_clear(struct k_thread *thread)
 	uintptr_t index = thread_index_get(thread);
 
 	if ((int)index != -1) {
-		k_object_wordlist_foreach(clear_perms_cb, (void *)index);
+		k_object_wordlist_foreach(clear_perms_sched_locked_cb,
+					 (void *)index);
 	}
 }
 
@@ -788,6 +896,11 @@ int k_object_validate(struct k_object *ko, enum k_objects otype,
 	}
 
 	return 0;
+}
+
+int z_impl_k_object_access_check(const void *object)
+{
+	return k_object_validate(k_object_find(object), K_OBJ_ANY, _OBJ_INIT_ANY);
 }
 
 void k_object_init(const void *obj)

@@ -225,6 +225,20 @@ static int spi_dw_configure(const struct device *dev,
 		return -ENOTSUP;
 	}
 
+	/* zero frequency would cause DIV/0 in clk divider calc */
+	if (!config->frequency) {
+		LOG_ERR("(%s): Frequency must not be zero", dev->name);
+		return -EINVAL;
+	}
+
+	/* return error if the expected bus frequency is
+	 * greater than half of the input core clock frequency
+	 */
+	if (config->frequency > (info->clock_frequency / DW_SPI_MIN_SCKDIV)) {
+		LOG_ERR("(%s): Invalid bus frequency", dev->name);
+		return -EINVAL;
+	}
+
 	/* Word size */
 	if (!IS_ENABLED(CONFIG_SPI_DW_HSSI) && (info->max_xfer_size == 32)) {
 		ctrlr0 |= DW_SPI_CTRLR0_DFS_32(SPI_WORD_SIZE_GET(config->operation));
@@ -558,6 +572,16 @@ int spi_dw_init(const struct device *dev)
 	pinctrl_apply_state(info->pcfg, PINCTRL_STATE_DEFAULT);
 #endif
 
+#if defined(CONFIG_CLOCK_CONTROL)
+	if (info->clk_dev) {
+		err = clock_control_on(info->clk_dev, info->clk_id);
+		if (err < 0) {
+			LOG_ERR("Failed to enable the clock");
+			return err;
+		}
+	}
+#endif
+
 	DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
 
 	info->config_func();
@@ -566,11 +590,13 @@ int spi_dw_init(const struct device *dev)
 	write_imr(dev, DW_SPI_IMR_MASK);
 	clear_bit_ssienr(dev);
 
+#if !DT_ANY_INST_PROP_STATUS_OKAY(aux_reg)
 	/* SSI component version */
 	spi->version = read_ssi_comp_version(dev);
 	LOG_DBG("Version: %c.%c%c%c", (spi->version >> 24) & 0xff,
 		(spi->version >> 16) & 0xff, (spi->version >> 8) & 0xff,
 		spi->version & 0xff);
+#endif
 
 	LOG_DBG("Designware SPI driver initialized on device: %p", dev);
 
@@ -647,6 +673,15 @@ COND_CODE_1(IS_EQ(DT_NUM_IRQS(DT_DRV_INST(inst)), 1),              \
 		(SPI_CFG_IRQS_MULTIPLE_ERR_LINES(inst)))))	   \
 }
 
+#if defined(CONFIG_CLOCK_CONTROL)
+#define CLOCK_DW_CONFIG(n)                                                             \
+	IF_ENABLED(DT_INST_NODE_HAS_PROP(0, clocks),                                   \
+		   (.clk_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(n)),                  \
+		    .clk_id = (clock_control_subsys_t)DT_INST_CLOCKS_CELL(n, clkid),))
+#else
+#define CLOCK_DW_CONFIG(n)
+#endif
+
 #define SPI_DW_INIT(inst)                                                                   \
 	IF_ENABLED(CONFIG_PINCTRL, (PINCTRL_DT_INST_DEFINE(inst);))                         \
 	SPI_DW_IRQ_HANDLER(inst);                                                           \
@@ -677,6 +712,7 @@ COND_CODE_1(IS_EQ(DT_NUM_IRQS(DT_DRV_INST(inst)), 1),              \
 			.set_bit_func = reg_set_bit,                                        \
 			.clear_bit_func = reg_clear_bit,                                    \
 			.test_bit_func = reg_test_bit,))                                    \
+		CLOCK_DW_CONFIG(inst)                                                      \
 	};                                                                                  \
 	SPI_DEVICE_DT_INST_DEFINE(inst,                                                     \
 		spi_dw_init,                                                                \

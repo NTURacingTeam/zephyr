@@ -21,7 +21,7 @@ LOG_MODULE_REGISTER(llext, CONFIG_LLEXT_LOG_LEVEL);
 
 sys_slist_t llext_list = SYS_SLIST_STATIC_INIT(&llext_list);
 
-struct k_mutex llext_lock = Z_MUTEX_INITIALIZER(llext_lock);
+K_MUTEX_DEFINE(llext_lock);
 
 int llext_section_shndx(const struct llext_loader *ldr, const struct llext *ext,
 			const char *sect_name)
@@ -31,7 +31,12 @@ int llext_section_shndx(const struct llext_loader *ldr, const struct llext *ext,
 	for (i = 1; i < ext->sect_cnt; i++) {
 		const char *name = llext_section_name(ldr, ext, ext->sect_hdrs + i);
 
-		if (!strcmp(name, sect_name)) {
+		if (name == NULL) {
+			LOG_ERR("Out of bounds string table index %u "
+				"for section name of section %d",
+				ext->sect_hdrs[i].sh_name, i);
+			return -ENOEXEC;
+		} else if (strcmp(name, sect_name) == 0) {
 			return i;
 		}
 	}
@@ -39,8 +44,8 @@ int llext_section_shndx(const struct llext_loader *ldr, const struct llext *ext,
 	return -ENOENT;
 }
 
-int llext_get_section_header(struct llext_loader *ldr, struct llext *ext, const char *search_name,
-			     elf_shdr_t *shdr)
+int llext_get_section_header(const struct llext_loader *ldr, const struct llext *ext,
+			     const char *search_name, elf_shdr_t *shdr)
 {
 	int ret;
 
@@ -63,14 +68,20 @@ ssize_t llext_find_section(struct llext_loader *ldr, const char *search_name)
 	     i < ldr->hdr.e_shnum;
 	     i++, pos += ldr->hdr.e_shentsize) {
 		shdr = llext_peek(ldr, pos);
-		if (!shdr) {
-			/* The peek() method isn't supported */
+		if (shdr == NULL) {
+			/* The peek() method isn't supported, or - less likely - shdr is
+			 * out of bounds
+			 */
 			return -ENOTSUP;
 		}
 
 		const char *name = llext_peek(ldr,
 					      ldr->sects[LLEXT_MEM_SHSTRTAB].sh_offset +
 					      shdr->sh_name);
+
+		if (name == NULL) {
+			return -ENOEXEC;
+		}
 
 		if (!strcmp(name, search_name)) {
 			return shdr->sh_offset;
@@ -179,7 +190,7 @@ int llext_load(struct llext_loader *ldr, const char *name, struct llext **ext,
 		goto out;
 	}
 
-	*ext = llext_alloc(sizeof(struct llext));
+	*ext = llext_alloc_metadata(sizeof(struct llext));
 	if (*ext == NULL) {
 		LOG_ERR("Not enough memory for extension metadata");
 		ret = -ENOMEM;
@@ -188,7 +199,7 @@ int llext_load(struct llext_loader *ldr, const char *name, struct llext **ext,
 
 	ret = do_llext_load(ldr, *ext, ldr_parm);
 	if (ret < 0) {
-		llext_free(*ext);
+		llext_free_metadata(*ext);
 		*ext = NULL;
 		goto out;
 	}
@@ -238,13 +249,13 @@ int llext_unload(struct llext **ext)
 	k_mutex_unlock(&llext_lock);
 
 	if (tmp->sect_hdrs_on_heap) {
-		llext_free(tmp->sect_hdrs);
+		llext_free_metadata(tmp->sect_hdrs);
 	}
 
 	llext_free_regions(tmp);
-	llext_free(tmp->sym_tab.syms);
-	llext_free(tmp->exp_tab.syms);
-	llext_free(tmp);
+	llext_free_metadata(tmp->sym_tab.syms);
+	llext_free_metadata(tmp->exp_tab.syms);
+	llext_free_metadata(tmp);
 
 	return 0;
 }
@@ -275,7 +286,17 @@ static int call_fn_table(struct llext *ext, bool is_init)
 	typedef void (*elf_void_fn_t)(void);
 
 	int fn_count = ret / sizeof(elf_void_fn_t);
-	elf_void_fn_t fn_table[fn_count];
+
+	if (fn_count == 0) {
+		return 0;
+	} else if (fn_count > CONFIG_LLEXT_MAX_INIT_FINI_FUNCTION_TABLE_ENTRIES) {
+		LOG_ERR("%s function table too large: %d entries (max %d)",
+			is_init ? "Bringup" : "Teardown", fn_count,
+			CONFIG_LLEXT_MAX_INIT_FINI_FUNCTION_TABLE_ENTRIES);
+		return -ENOEXEC;
+	}
+
+	elf_void_fn_t fn_table[CONFIG_LLEXT_MAX_INIT_FINI_FUNCTION_TABLE_ENTRIES];
 
 	ret = llext_get_fn_table(ext, is_init, &fn_table, sizeof(fn_table));
 	if (ret < 0) {
